@@ -2128,6 +2128,7 @@
       .myscholar-badge { appearance:none !important; box-sizing:border-box !important; display:inline-flex !important; align-items:center !important; gap:3px !important; max-width:240px !important; min-height:22px !important; margin:0 !important; padding:2px 7px !important; border:1px solid #cbd5e1 !important; border-radius:999px !important; background:#f8fafc !important; color:#334155 !important; font:inherit !important; text-decoration:none !important; vertical-align:middle !important; cursor:pointer !important; box-shadow:none !important; overflow:hidden !important; white-space:nowrap !important; }
       .myscholar-badge:hover, .myscholar-badge:focus-visible { border-color:#64748b !important; outline:2px solid rgba(59,130,246,.32) !important; outline-offset:1px !important; }
       .myscholar-badge__label { opacity:.76 !important; flex:none !important; }
+      .myscholar-badge--label-only .myscholar-badge__label { opacity:1 !important; font-weight:700 !important; }
       .myscholar-badge__value { overflow:hidden !important; text-overflow:ellipsis !important; font-weight:700 !important; }
       .myscholar-badge--tone-danger { color:#991b1b !important; background:#fef2f2 !important; border-color:#fca5a5 !important; }
       /* index: DOAJ/CWTS/MEDLINE/PMC/CSSCI/北大核心 等收录类 — 翡翠绿 (Color Hunt #1B5E20 #66BB6A #A5D6A7 #E8F5E9) */
@@ -2746,12 +2747,14 @@
   }
 
   function makeBadge(metric, detailId) {
-    const button = el('button', `myscholar-badge myscholar-badge--group-${metric.group || 'metric'} myscholar-badge--tone-${metric.tone || 'neutral'}`);
+    const isRedundant = metric.label === metric.value;
+    const classes = ['myscholar-badge', `myscholar-badge--group-${metric.group || 'metric'}`, `myscholar-badge--tone-${metric.tone || 'neutral'}`];
+    if (isRedundant) classes.push('myscholar-badge--label-only');
+    const button = el('button', classes.join(' '));
     button.type = 'button';
     button.dataset.detailId = detailId;
     button.dataset.metricId = metric.id;
     button.__myscholarMetric = metric;
-    const isRedundant = metric.label === metric.value;
     button.setAttribute('aria-label', isRedundant ? `${metric.label}；点击查看来源` : `${metric.label}：${metric.value}；点击查看来源`);
     button.title = tooltipText(metric);
     if (isRedundant) {
