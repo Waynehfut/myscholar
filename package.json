@@ -1,0 +1,12 @@
+{
+  "name": "myscholar-userscript",
+  "version": "0.3.0",
+  "private": true,
+  "description": "在论文标题旁显示可核验的期刊、分级和收录标签。",
+  "scripts": {
+    "check": "node --check myScholar.user.js",
+    "test": "node --test tests/*.test.cjs",
+    "verify": "npm run check && npm test"
+  },
+  "license": "MIT"
+}

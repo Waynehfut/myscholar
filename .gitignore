@@ -1,0 +1,14 @@
+# Local credentials and per-user configuration. Never commit these files.
+config.yml
+config.yaml
+.env
+.env.*
+!.env.example
+
+# Browser and test artifacts
+output/
+playwright-report/
+test-results/
+.DS_Store
+.playwright-cli/
+tests/
