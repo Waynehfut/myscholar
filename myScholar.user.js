@@ -43,7 +43,7 @@
   const DISTRIBUTED_GAPS = Object.freeze({
     'api.crossref.org': 1100,
     'eutils.ncbi.nlm.nih.gov': 360,
-    'www.easyscholar.cc': 560,
+    'www.easyscholar.cc': 400,
   });
 
   const DEFAULT_CONFIG = Object.freeze({
@@ -78,6 +78,14 @@
 
   function cleanText(value) {
     return String(value ?? '')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#x27;/g, "'")
+      .replace(/&apos;/g, "'")
+      .replace(/&nbsp;/g, ' ')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -746,6 +754,39 @@
     return 'EasyScholar · 高校与评价目录';
   }
 
+  const VISIBLE_BY_DEFAULT = Object.freeze(new Set([
+    'openalex:retracted',
+    'openalex:doaj',
+    'openalex:oa-journal',
+    'easy:sciwarn',
+    'easy:xrWarn',
+    'easy:sciif',
+    'easy:esi',
+    'easy:sciUpTop',
+    'easy:sciBase',
+    'easy:sciUp',
+    'easy:pku',
+    'easy:zhongguokejihexin',
+    'easy:cssci',
+    'easy:ajg',
+    'easy:ccf',
+    'easy:fms',
+    'easy:ft50',
+    'easy:utd24',
+  ]));
+
+  function defaultHiddenGroupKeys() {
+    const allKnown = [];
+    FIXED_LABEL_OPTIONS.forEach((option) => {
+      if (!VISIBLE_BY_DEFAULT.has(option.key)) allKnown.push(option.key);
+    });
+    Object.keys(EASY_FIELDS).forEach((field) => {
+      const key = `easy:${canonicalEasyField(field)}`;
+      if (!VISIBLE_BY_DEFAULT.has(key) && !allKnown.includes(key)) allKnown.push(key);
+    });
+    return allKnown;
+  }
+
   const FIXED_LABEL_OPTIONS = Object.freeze((() => {
     const options = [
       { key: 'journal:name', label: '期刊 / 出版来源', group: '基本信息' },
@@ -826,6 +867,8 @@
     pageActivationMode,
     titleSimilarity,
     isUnsafeTitleOnlyQuery,
+    settleWithin,
+    rejectAfter,
     parseRetryAfter,
     easyScholarRequestUrl,
     isValidNpiLease,
@@ -866,6 +909,7 @@
     labelCatalog: {},
     labelCatalogSaveTimer: null,
     processed: new WeakMap(),
+    signatureCooldowns: new Map(),
     detailById: new Map(),
     visibleObserver: null,
     mutationObserver: null,
@@ -880,6 +924,7 @@
     lastUrl: location.href,
     containerRecords: new Set(),
     easyRequestHandles: new Set(),
+    debugLastEasyScholar: null,
   };
 
   function gmGet(key, fallback) {
@@ -1027,7 +1072,11 @@
     config.customSiteRules = normalizeSiteRules(config.customSiteRules);
     config.maxBadges = Math.min(12, Math.max(1, Number(config.maxBadges) || 6));
     config.minTitleLength = Math.min(80, Math.max(5, Number(config.minTitleLength) || 10));
+    const wasFresh = !Array.isArray(saved?.hiddenMetricKeys) || saved.hiddenMetricKeys.length === 0;
     config.hiddenMetricKeys = normalizeHiddenMetricKeys(config.hiddenMetricKeys);
+    if (wasFresh && !config.hiddenMetricKeys.length) {
+      config.hiddenMetricKeys = normalizeHiddenMetricKeys(defaultHiddenGroupKeys());
+    }
     config.easyScholarKey = cleanText(config.easyScholarKey);
     const savedProfileId = cleanText(config.easyScholarProfileId);
     config.easyScholarProfileId = config.easyScholarKey
@@ -1041,6 +1090,12 @@
     state.config = normalizeConfig(savedConfig);
     if (state.config.easyScholarKey && cleanText(savedConfig?.easyScholarProfileId) !== state.config.easyScholarProfileId) {
       gmSet(CONFIG_KEY, state.config);
+    } else if (!Array.isArray(savedConfig?.hiddenMetricKeys) || savedConfig.hiddenMetricKeys.length === 0) {
+      const existingKeys = new Set(normalizeHiddenMetricKeys(savedConfig?.hiddenMetricKeys));
+      const computed = normalizeHiddenMetricKeys(state.config.hiddenMetricKeys);
+      if (computed.some((key) => !existingKeys.has(key))) {
+        gmSet(CONFIG_KEY, state.config);
+      }
     }
     const cached = gmGet(CACHE_KEY, {});
     state.cache = cached && typeof cached === 'object' ? cached : {};
@@ -1135,11 +1190,49 @@
   const crossrefQueue = new RateQueue(1, 1050);
   const openAlexQueue = new RateQueue(2, 120);
   const nlmQueue = new RateQueue(1, 350);
-  const easyQueue = new RateQueue(1, 550);
+  const easyQueue = new RateQueue(2, 350);
   const annotationQueue = new RateQueue(3, 25);
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Optional data sources must never keep the basic journal result in the
+  // loading state. Their request can finish and warm the cache later, while
+  // this annotation falls back to the data already available.
+  function settleWithin(promise, timeoutMs, fallback) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(fallback), Math.max(1, Number(timeoutMs) || 1));
+      Promise.resolve(promise).then(finish, () => finish(fallback));
+    });
+  }
+
+  function rejectAfter(promise, timeoutMs, message = '标注查询超时') {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback(value);
+      };
+      const timer = setTimeout(() => {
+        const error = new Error(message);
+        error.timeout = true;
+        finish(reject, error);
+      }, Math.max(1, Number(timeoutMs) || 1));
+      Promise.resolve(promise).then(
+        (value) => finish(resolve, value),
+        (error) => finish(reject, error),
+      );
+    });
   }
 
   async function rawRequest(url, options = {}) {
@@ -1192,7 +1285,7 @@
           headers: { Accept: options.accept || 'application/json' },
           responseType: options.responseType || 'json',
           timeout: options.timeout || 15000,
-          anonymous: true,
+          anonymous: parsed.hostname !== 'www.easyscholar.cc',
           onload(response) {
             if (options.credentialGuard && !options.credentialGuard()) {
               rejectOnce(cancelledError());
@@ -1226,7 +1319,10 @@
             }
           },
           ontimeout() { rejectOnce(new Error('请求超时')); },
-          onerror() { rejectOnce(new Error('网络请求失败')); },
+          onerror(response) {
+            const detail = cleanText(response?.error) || cleanText(response?.statusText) || '';
+            rejectOnce(new Error(`网络请求失败${detail ? `: ${detail}` : ''}`));
+          },
           onabort() { rejectOnce(cancelledError()); },
         });
         if (options.trackEasyRequest && handle?.abort) state.easyRequestHandles.add(handle);
@@ -1467,36 +1563,61 @@
   async function lookupEasyScholar(journal, runtimeGuard) {
     const key = cleanText(state.config.easyScholarKey);
     const name = cleanText(journal);
-    if (!key || !name) return [];
+    const reqUrl = easyScholarRequestUrl(key, name);
+    const reqAt = Date.now();
+    const storeDebug = (patch) => {
+      try {
+        state.debugLastEasyScholar = Object.assign({ journal: name, url: reqUrl, requestedAt: reqAt }, patch || {});
+      } catch (_) { /* debug storage best-effort only */ }
+    };
+    if (!key || !name) {
+      storeDebug({ skipped: true, skippedReason: 'missing key or name', fetchedAt: Date.now() });
+      return [];
+    }
     const profileId = cleanText(state.config.easyScholarProfileId);
-    if (!profileId) return [];
+    if (!profileId) {
+      storeDebug({ skipped: true, skippedReason: 'missing profileId', fetchedAt: Date.now() });
+      return [];
+    }
     const credentialGuard = () => easyScholarCredentialIsCurrent(key, profileId);
     const requestGuard = () => credentialGuard() && (!runtimeGuard || runtimeGuard());
     const cacheKey = `easy:${profileId}:${hashString(normalizeJournal(name))}`;
-    return withCache(cacheKey, 14 * 24 * 60 * 60 * 1000, () => easyQueue.add(async () => {
-      if (!requestGuard()) {
-        const error = new Error('EasyScholar 密钥已更改');
-        error.cancelled = true;
-        throw error;
+    try {
+      const result = await withCache(cacheKey, 14 * 24 * 60 * 60 * 1000, () => easyQueue.add(async () => {
+        if (!requestGuard()) {
+          const error = new Error('EasyScholar 密钥已更改');
+          error.cancelled = true;
+          throw error;
+        }
+        const payload = await requestWithRetry(reqUrl, {
+          credentialGuard: requestGuard,
+          runtimeGuard,
+          easyProfileId: profileId,
+          trackEasyRequest: true,
+        });
+        if (!requestGuard()) {
+          const error = new Error('EasyScholar 密钥已更改');
+          error.cancelled = true;
+          throw error;
+        }
+        if (Number(payload?.code) !== 200) {
+          const error = new Error(cleanText(payload?.msg) || `EasyScholar API code ${payload?.code ?? 'unknown'}`);
+          error.status = Number(payload?.code) || 400;
+          storeDebug({ fetchedAt: Date.now(), fromCache: false, code: Number(payload?.code) || 0, msg: cleanText(payload?.msg) || '', rawPayload: payload, parsedCount: 0, error: cleanText(error.message) });
+          throw error;
+        }
+        const parsed = parseEasyScholar(payload);
+        storeDebug({ fetchedAt: Date.now(), fromCache: false, code: Number(payload?.code) || 200, msg: cleanText(payload?.msg) || '', rawPayload: payload, parsedCount: parsed.length });
+        return parsed;
+      }));
+      if (state.debugLastEasyScholar?.requestedAt !== reqAt) {
+        storeDebug({ fetchedAt: Date.now(), fromCache: true, note: 'hit cache; raw payload not re-fetched', cachedResultCount: Array.isArray(result) ? result.length : 0 });
       }
-      const payload = await requestWithRetry(easyScholarRequestUrl(key, name), {
-        credentialGuard: requestGuard,
-        runtimeGuard,
-        easyProfileId: profileId,
-        trackEasyRequest: true,
-      });
-      if (!requestGuard()) {
-        const error = new Error('EasyScholar 密钥已更改');
-        error.cancelled = true;
-        throw error;
-      }
-      if (Number(payload?.code) !== 200) {
-        const error = new Error(cleanText(payload?.msg) || `EasyScholar API code ${payload?.code ?? 'unknown'}`);
-        error.status = Number(payload?.code) || 400;
-        throw error;
-      }
-      return parseEasyScholar(payload);
-    }));
+      return result;
+    } catch (error) {
+      storeDebug({ fetchedAt: Date.now(), error: cleanText(error.message), cancelled: Boolean(error.cancelled), status: Number(error.status) || undefined });
+      throw error;
+    }
   }
 
   function freshNpiCache() {
@@ -2542,6 +2663,12 @@
       labelSummary.textContent = `已选择 ${enabledCount} / ${labelInputs.length} 项；未出现过的动态标签会在首次识别后加入此列表。`;
     };
     let clearUnknownHiddenOnSave = false;
+    const applyDefaultLabelState = () => {
+      labelInputs.forEach((item) => {
+        item.input.checked = VISIBLE_BY_DEFAULT.has(item.key);
+      });
+      updateLabelSummary();
+    };
     const setAllLabels = (checked, resetUnknown = false) => {
       labelInputs.forEach((item) => { item.input.checked = checked; });
       if (resetUnknown) clearUnknownHiddenOnSave = true;
@@ -2549,7 +2676,10 @@
     };
     selectAll.addEventListener('click', () => setAllLabels(true, true));
     selectNone.addEventListener('click', () => setAllLabels(false));
-    resetLabels.addEventListener('click', () => setAllLabels(true, true));
+    resetLabels.addEventListener('click', () => {
+      clearUnknownHiddenOnSave = false;
+      applyDefaultLabelState();
+    });
     labelInputs.forEach((item) => item.input.addEventListener('change', updateLabelSummary));
     labelSearch.addEventListener('input', () => {
       const query = normalizeTitle(labelSearch.value);
@@ -2636,11 +2766,91 @@
     easyKey.value = state.config.easyScholarKey;
     const nlm = checkboxBlock('医学期刊查询 NLM Catalog', state.config.enableNlm, 'nlm', '开启后会将已识别期刊的 ISSN 发送给 NLM Catalog，进一步区分 MEDLINE 当前收录与 PMC 期刊列表。使用该服务须遵守 NCBI Disclaimer and Copyright Notice。');
     const npi = checkboxBlock('启用挪威 NPI 期刊等级', state.config.enableNpi, 'npi', '首次使用会下载官方当前期刊 CSV；L2/L1 是挪威国家分类，不是 JCR 分区。');
+    const easyKeyField = fieldBlock('EasyScholar Open API Secret Key（可选）', easyKey, '仅保存在本油猴脚本的 GM 本地存储；查询时按官方 GET 接口要求，仅发送给 www.easyscholar.cc。留空并保存即可清除。');
+    const easyDebugTools = el('div', 'label-tools');
+    const dumpEasyBtn = el('button', 'action', '输出最近一次 EasyScholar 响应');
+    dumpEasyBtn.type = 'button';
+    const dumpEasyStatus = el('div', 'hint');
+    dumpEasyBtn.addEventListener('click', () => {
+      const last = state.debugLastEasyScholar;
+      if (!last) {
+        dumpEasyStatus.textContent = '暂无记录；请先在页面中至少标注一篇已启用 EasyScholar 数据源的论文。';
+        return;
+      }
+      const toPrint = { ...last };
+      delete toPrint.rawPayload;
+      const kConsole = console;
+      kConsole.groupCollapsed(`[MyScholar] EasyScholar 调试 · ${last.journal || '未提供期刊名'} · ${new Date(last.requestedAt || Date.now()).toLocaleString()}`);
+      kConsole.log('概览：', toPrint);
+      if (last.rawPayload !== undefined) kConsole.log('原始 rawPayload：', last.rawPayload);
+      kConsole.groupEnd();
+      try {
+        const debugUi = initUi();
+        const prevHeading = debugUi.heading.textContent;
+        debugUi.heading.textContent = 'EasyScholar 调试 · 最近一次响应';
+        const debugBody = debugUi.body;
+        debugBody.replaceChildren();
+        const summary = el('dl', 'meta');
+        appendMeta(summary, '查询期刊', last.journal || '');
+        appendMeta(summary, '请求地址', last.url || '', /^https?:/.test(last.url || '') ? last.url : '');
+        const fmt = (ts) => ts ? new Date(ts).toLocaleString() : '';
+        appendMeta(summary, '请求时间', fmt(last.requestedAt));
+        appendMeta(summary, '完成时间', fmt(last.fetchedAt));
+        if (last.fromCache) appendMeta(summary, '缓存命中', '是 · 原始 rawPayload 未重新请求');
+        if (last.skipped) appendMeta(summary, '跳过原因', last.skippedReason || '未启用');
+        if (Number.isFinite(last.code)) appendMeta(summary, '响应 code', String(last.code));
+        if (cleanText(last.msg)) appendMeta(summary, '响应 msg', last.msg);
+        if (Number.isFinite(last.parsedCount)) appendMeta(summary, '解析出的标签数', String(last.parsedCount));
+        if (Number.isFinite(last.cachedResultCount)) appendMeta(summary, '缓存内标签数', String(last.cachedResultCount));
+        if (cleanText(last.error)) appendMeta(summary, '错误信息', last.error);
+        debugBody.append(summary);
+        debugBody.append(setText(el('h3'), '完整 JSON（可复制）'));
+        const debugArea = document.createElement('textarea');
+        debugArea.spellcheck = false;
+        debugArea.readOnly = true;
+        const serializable = { ...last };
+        if (serializable.rawPayload !== undefined) {
+          try { serializable.rawPayload = JSON.parse(JSON.stringify(last.rawPayload)); } catch (_) { }
+        }
+        debugArea.value = JSON.stringify(last, null, 2);
+        debugArea.style.minHeight = '220px';
+        debugBody.append(debugArea);
+        const actions = el('div', 'actions');
+        const copyBtn = el('button', 'action primary', '复制 JSON');
+        copyBtn.type = 'button';
+        const closeBtn = el('button', 'action', '返回设置');
+        closeBtn.type = 'button';
+        actions.append(copyBtn, closeBtn);
+        debugBody.append(actions);
+        const copyStatus = el('div', 'status');
+        debugBody.append(copyStatus);
+        copyBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(debugArea.value);
+            copyStatus.textContent = '已复制到剪贴板。';
+          } catch (_) {
+            debugArea.select();
+            document.execCommand('copy');
+            copyStatus.textContent = '已尝试使用兼容性复制；请手动确认。';
+          }
+        });
+        closeBtn.addEventListener('click', () => {
+          debugUi.heading.textContent = prevHeading;
+          openSettings();
+        });
+        dumpEasyStatus.textContent = '已在控制台（Console）输出结构化数据；详细 JSON 在弹窗中。';
+      } catch (e) {
+        dumpEasyStatus.textContent = `控制台已输出；弹窗失败：${cleanText(e.message)}`;
+      }
+    });
+    easyDebugTools.append(dumpEasyBtn);
     data.append(
       openAlexEnabled.block,
       fieldBlock('OpenAlex API Key（推荐，免费申请）', openAlexKey, '只发送给 api.openalex.org；不填写时脚本会尝试其有限匿名额度。'),
       fieldBlock('联系邮箱（可选）', email, '仅发送给 Crossref 以使用礼貌请求池；不会发送给 NCBI，也不会展示在页面上。'),
-      fieldBlock('EasyScholar Open API Secret Key（可选）', easyKey, '仅保存在本油猴脚本的 GM 本地存储；查询时按官方 GET 接口要求，仅发送给 www.easyscholar.cc。留空并保存即可清除。'),
+      easyKeyField,
+      easyDebugTools,
+      dumpEasyStatus,
       nlm.block,
       npi.block,
     );
@@ -2860,17 +3070,37 @@
     );
   }
 
-  async function resolveDescriptor(descriptor) {
+  async function resolveDescriptor(descriptor, onPartial) {
     if (descriptor.generic && !descriptor.doi) return null;
     if (!descriptorRunIsCurrent(descriptor)) return null;
     if (!publicationStillMatchesDescriptor(descriptor)) return null;
+    const hasDoi = normalizeDoi(descriptor.doi);
     let crossref = null;
     let crossrefFailed = false;
-    try {
-      crossref = await lookupCrossref(descriptor);
-    } catch (error) {
-      if (!descriptor.journalHint) throw error;
-      crossrefFailed = true;
+    let openAlex = null;
+    if (hasDoi) {
+      // 有 DOI 时 Crossref 和 OpenAlex 可完全并行（两者均按 DOI 独立查询）
+      const [crossrefResult, openAlexResult] = await Promise.all([
+        (async () => {
+          try { return await lookupCrossref(descriptor); }
+          catch (error) {
+            if (!descriptor.journalHint) throw error;
+            crossrefFailed = true;
+            return null;
+          }
+        })(),
+        settleWithin(lookupOpenAlex(hasDoi, descriptor.runtimeGuard), 12000, null),
+      ]);
+      crossref = crossrefResult;
+      openAlex = openAlexResult;
+    } else {
+      // 无 DOI：先 Crossref 题名检索，拿到 DOI 后再查 OpenAlex
+      try {
+        crossref = await lookupCrossref(descriptor);
+      } catch (error) {
+        if (!descriptor.journalHint) throw error;
+        crossrefFailed = true;
+      }
     }
     if (!descriptorRunIsCurrent(descriptor)) return null;
     if (!publicationStillMatchesDescriptor(descriptor)) return null;
@@ -2880,7 +3110,13 @@
     // turning an otherwise plausible page meta journal name into a false tag.
     if (descriptor.generic && !crossref) return null;
     if (!crossref && !descriptor.journalHint) return null;
-    const openAlex = await lookupOpenAlex(crossref?.doi, descriptor.runtimeGuard);
+    if (!hasDoi && crossref?.doi) {
+      openAlex = await settleWithin(
+        lookupOpenAlex(crossref.doi, descriptor.runtimeGuard),
+        12000,
+        null,
+      );
+    }
     if (!descriptorRunIsCurrent(descriptor)) return null;
     if (!publicationStillMatchesDescriptor(descriptor)) return null;
     const source = openAlex?.source;
@@ -2893,12 +3129,6 @@
     const issns = [...new Set([...(crossref?.issns || []), ...extractIssns(journalSource)])];
     const local = localMetrics(journal, issns);
     if (!descriptorRunIsCurrent(descriptor)) return null;
-    const [easyMetrics, nlmMetrics, npiMetrics] = await Promise.all([
-      lookupEasyScholar(journal, descriptor.runtimeGuard).catch(() => []),
-      lookupNlm(issns, openAlex, descriptor.runtimeGuard),
-      lookupNpi(issns, descriptor.runtimeGuard),
-    ]);
-    if (!descriptorRunIsCurrent(descriptor)) return null;
     const journalMetric = makeMetric({
       id: 'journal:name', label: (crossrefIsJournal || journalSource) ? '期刊' : '出版来源', value: journal || '已识别（名称缺失）', source: crossref ? 'Crossref / OpenAlex' : `${descriptor.site} 页面字段`,
       year: crossref?.year || descriptor.year, note: crossref
@@ -2906,6 +3136,36 @@
         : '期刊名直接取自当前结果卡的来源字段；未通过 DOI/题名元数据服务复核。',
       url: crossref?.doi ? `https://doi.org/${crossref.doi}` : '', group: 'journal', tone: 'neutral',
     });
+    const match = crossref?.match || {
+      method: '页面期刊字段', confidence: null, queryTitle: descriptor.title, matchedTitle: descriptor.title,
+    };
+    // 增量渲染：先用本地数据 + OpenAlex 快速出标签，慢源（EasyScholar/NLM/NPI）稍后补充
+    if (onPartial) {
+      const partialMetrics = metricDedupe([
+        ...local.metrics,
+        ...metricsFromOpenAlex(openAlex),
+        journalMetric,
+      ]);
+      if (partialMetrics.length) {
+        rememberMetricOptions(partialMetrics);
+        onPartial({
+          paperTitle: descriptor.title,
+          site: descriptor.site,
+          journal,
+          issns,
+          doi: crossref?.doi || descriptor.doi,
+          match,
+          metrics: partialMetrics,
+          notices: [],
+        });
+      }
+    }
+    const [easyMetrics, nlmMetrics, npiMetrics] = await Promise.all([
+      settleWithin(lookupEasyScholar(journal, descriptor.runtimeGuard), 8000, []),
+      settleWithin(lookupNlm(issns, openAlex, descriptor.runtimeGuard), 7000, []),
+      settleWithin(lookupNpi(issns, descriptor.runtimeGuard), 5000, []),
+    ]);
+    if (!descriptorRunIsCurrent(descriptor)) return null;
     const metrics = metricDedupe([
       ...local.metrics,
       ...easyMetrics,
@@ -2916,9 +3176,6 @@
     ]);
     rememberMetricOptions(metrics);
     const notices = [];
-    const match = crossref?.match || {
-      method: '页面期刊字段', confidence: null, queryTitle: descriptor.title, matchedTitle: descriptor.title,
-    };
     if (match.method === '题名' && match.confidence < 0.9) {
       notices.push(`题名匹配置信度为 ${(match.confidence * 100).toFixed(0)}%，请核对 DOI 与期刊名后再用于评价。`);
     }
@@ -2943,19 +3200,52 @@
     };
   }
 
+  function markSignatureCooldown(signature, retryAt) {
+    if (!signature) return;
+    state.signatureCooldowns.set(signature, retryAt);
+    // 定期清理过期条目，避免长列表页面的内存占用
+    if (state.signatureCooldowns.size > 120) {
+      const now = Date.now();
+      for (const [k, v] of state.signatureCooldowns) {
+        if (v <= now) state.signatureCooldowns.delete(k);
+      }
+    }
+  }
+  function signatureIsCooling(signature) {
+    if (!signature) return false;
+    const retryAt = state.signatureCooldowns.get(signature);
+    return retryAt !== undefined && retryAt > Date.now();
+  }
+
   async function annotate(descriptor, container) {
+    let partialRendered = false;
     try {
-      const detail = await annotationQueue.add(() => resolveDescriptor(descriptor));
+      const onPartial = (partialDetail) => {
+        if (!container.isConnected) return;
+        if (partialDetail && partialDetail.metrics.length) {
+          renderDetail(container, partialDetail);
+          partialRendered = true;
+          const processed = state.processed.get(descriptor.target);
+          if (processed?.container === container) processed.done = 'success';
+        }
+      };
+      const detailPromise = annotationQueue.add(() => resolveDescriptor(descriptor, onPartial));
+      const detail = await rejectAfter(detailPromise, 45000);
       if (!container.isConnected) return;
       if (!isDescriptorTargetVisible(descriptor.target) || !descriptor.card?.isConnected || hashString(normalizeTitle(descriptor.target?.textContent)) !== descriptor.nodeSignature) {
         const processed = state.processed.get(descriptor.target);
-        if (processed?.container === container) processed.done = 'miss';
+        const retryAt = Date.now() + 5000;
+        if (processed?.container === container) { processed.done = 'cooldown'; processed.retryAt = retryAt; }
+        markSignatureCooldown(descriptor.identitySignature, retryAt);
         container.remove();
         return;
       }
       if (!detail || !detail.metrics.length) {
+        if (partialRendered) return;
         const processed = state.processed.get(descriptor.target);
-        if (processed?.container === container) processed.done = 'miss';
+        const retryAt = Date.now() + 30000;
+        if (processed?.container === container) { processed.done = 'cooldown'; processed.retryAt = retryAt; }
+        markSignatureCooldown(descriptor.identitySignature, retryAt);
         if (state.config.showMisses) {
           container.replaceChildren(el('span', 'myscholar-badge myscholar-badge--loading', '未可靠匹配期刊'));
         } else container.remove();
@@ -2965,6 +3255,7 @@
       const processed = state.processed.get(descriptor.target);
       if (processed?.container === container) processed.done = 'success';
     } catch (error) {
+      if (partialRendered) return;
       if (!container.isConnected) return;
       if (state.config.showMisses) {
         const failed = el('span', 'myscholar-badge myscholar-badge--group-danger myscholar-badge--tone-danger', '期刊信息 · 查询失败');
@@ -2973,8 +3264,10 @@
       } else container.remove();
       const processed = state.processed.get(descriptor.target);
       if (processed?.container === container) {
-        processed.done = processed.attempts >= 2 ? 'miss' : 'error';
-        processed.retryAt = Date.now() + 30000;
+        const useCooldown = processed.attempts >= 2;
+        processed.done = useCooldown ? 'cooldown' : 'error';
+        processed.retryAt = Date.now() + (useCooldown ? 60000 : 30000);
+        markSignatureCooldown(descriptor.identitySignature, processed.retryAt);
         if (processed.done === 'error') setTimeout(scheduleScan, 30100);
       }
     }
@@ -2985,10 +3278,12 @@
     descriptor.runtimeEpoch = state.runtimeEpoch;
     descriptor.runtimeGuard = () => descriptorRunIsCurrent(descriptor);
     const signature = descriptor.identitySignature;
+    // 基于签名的冷却：跨 SPA DOM 替换仍生效，不依赖 WeakMap 的 target 引用
+    if (signatureIsCooling(signature)) return;
     const previous = state.processed.get(descriptor.target);
     if (previous?.signature === signature && (
       previous.container?.isConnected
-      || previous.done === 'miss'
+      || (previous.done === 'cooldown' && previous.retryAt > Date.now())
       || (previous.done === 'error' && previous.retryAt > Date.now())
     )) return;
     if (previous) {
@@ -3003,10 +3298,25 @@
       done: 'pending',
       attempts: previous?.signature === signature ? (previous.attempts || 1) + 1 : 1,
     });
-    const start = () => annotate(descriptor, container);
+    let started = false;
+    const start = () => {
+      if (started) return;
+      started = true;
+      if (container.__myscholarFallbackTimer) {
+        clearTimeout(container.__myscholarFallbackTimer);
+        delete container.__myscholarFallbackTimer;
+      }
+      delete container.__myscholarStart;
+      annotate(descriptor, container);
+    };
     if (state.visibleObserver) {
       container.__myscholarStart = start;
       state.visibleObserver.observe(container);
+      container.__myscholarFallbackTimer = setTimeout(() => {
+        if (!container.isConnected) return;
+        state.visibleObserver?.unobserve(container);
+        start();
+      }, 10000);
     } else start();
   }
 
@@ -3037,7 +3347,12 @@
       record.container.remove();
       if (record.detailId) state.detailById.delete(record.detailId);
       const processed = state.processed.get(record.target);
-      if (processed?.container === record.container) processed.done = 'miss';
+      if (processed?.container === record.container) {
+        const retryAt = Date.now() + 5000;
+        processed.done = 'cooldown';
+        processed.retryAt = retryAt;
+        if (processed.signature) markSignatureCooldown(processed.signature, retryAt);
+      }
       state.containerRecords.delete(record);
     }
     currentDescriptors.forEach(queueDescriptor);
@@ -3052,10 +3367,19 @@
         && record.card.contains(record.container);
       if (valid) continue;
       state.visibleObserver?.unobserve(record.container);
+      if (record.container.__myscholarFallbackTimer) {
+        clearTimeout(record.container.__myscholarFallbackTimer);
+        delete record.container.__myscholarFallbackTimer;
+      }
       record.container.remove();
       if (record.detailId) state.detailById.delete(record.detailId);
       const processed = state.processed.get(record.target);
-      if (processed?.container === record.container) processed.done = 'miss';
+      if (processed?.container === record.container) {
+        const retryAt = Date.now() + 5000;
+        processed.done = 'cooldown';
+        processed.retryAt = retryAt;
+        if (processed.signature) markSignatureCooldown(processed.signature, retryAt);
+      }
       state.containerRecords.delete(record);
     }
   }
@@ -3070,10 +3394,17 @@
   }
 
   function clearPageAnnotations() {
-    state.containerRecords.forEach((record) => state.visibleObserver?.unobserve(record.container));
+    state.containerRecords.forEach((record) => {
+      state.visibleObserver?.unobserve(record.container);
+      if (record.container.__myscholarFallbackTimer) {
+        clearTimeout(record.container.__myscholarFallbackTimer);
+        delete record.container.__myscholarFallbackTimer;
+      }
+    });
     document.querySelectorAll('.myscholar-badges').forEach((node) => node.remove());
     state.containerRecords.clear();
     state.processed = new WeakMap();
+    state.signatureCooldowns.clear();
     state.detailById.clear();
   }
 
@@ -3136,9 +3467,6 @@
         }
         if (mutation.type === 'attributes') {
           return !mutation.target.closest?.('#myscholar-ui-host, .myscholar-badges');
-        }
-        if ([...mutation.removedNodes].some((node) => node.nodeType === Node.ELEMENT_NODE && node.matches?.('.myscholar-badges'))) {
-          return true;
         }
         const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
         return changedNodes.some((node) => {
