@@ -2129,18 +2129,66 @@
       .myscholar-badge:hover, .myscholar-badge:focus-visible { border-color:#64748b !important; outline:2px solid rgba(59,130,246,.32) !important; outline-offset:1px !important; }
       .myscholar-badge__label { opacity:.76 !important; flex:none !important; }
       .myscholar-badge__value { overflow:hidden !important; text-overflow:ellipsis !important; font-weight:700 !important; }
-      .myscholar-badge--top { color:#166534 !important; background:#f0fdf4 !important; border-color:#86efac !important; }
-      .myscholar-badge--good { color:#1d4ed8 !important; background:#eff6ff !important; border-color:#93c5fd !important; }
-      .myscholar-badge--info { color:#075985 !important; background:#f0f9ff !important; border-color:#7dd3fc !important; }
-      .myscholar-badge--danger { color:#b91c1c !important; background:#fef2f2 !important; border-color:#fca5a5 !important; }
+      .myscholar-badge--tone-danger { color:#991b1b !important; background:#fef2f2 !important; border-color:#fca5a5 !important; }
+      /* index: DOAJ/CWTS/MEDLINE/PMC/CSSCI/北大核心 等收录类 — 翡翠绿 (Color Hunt #1B5E20 #66BB6A #A5D6A7 #E8F5E9) */
+      .myscholar-badge--group-index.myscholar-badge--tone-top { color:#14532d !important; background:#dcfce7 !important; border-color:#4ade80 !important; }
+      .myscholar-badge--group-index.myscholar-badge--tone-good { color:#166534 !important; background:#f0fdf4 !important; border-color:#86efac !important; }
+      .myscholar-badge--group-index.myscholar-badge--tone-info { color:#15803d !important; background:#ecfdf5 !important; border-color:#bbf7d0 !important; }
+      .myscholar-badge--group-index.myscholar-badge--tone-neutral { color:#166534 !important; background:#f0fdfa !important; border-color:#bbf7d0 !important; }
+      /* sci: SCI/JCR/SSCI/IF/JCI/ESI — 皇家蓝 (Color Hunt #0D47A1 #2196F3 #90CAF9 #E3F2FD) */
+      .myscholar-badge--group-sci.myscholar-badge--tone-top { color:#1e3a8a !important; background:#dbeafe !important; border-color:#60a5fa !important; }
+      .myscholar-badge--group-sci.myscholar-badge--tone-good { color:#1d4ed8 !important; background:#eff6ff !important; border-color:#93c5fd !important; }
+      .myscholar-badge--group-sci.myscholar-badge--tone-info { color:#1e40af !important; background:#f0f9ff !important; border-color:#bfdbfe !important; }
+      .myscholar-badge--group-sci.myscholar-badge--tone-neutral { color:#1e3a8a !important; background:#f8fafc !important; border-color:#e0f2fe !important; }
+      /* cas: 中科院分区系列 — 琥珀橙 (Color Hunt #C62828 #FF8F00 #FBC02D #F5F5DC) */
+      .myscholar-badge--group-cas.myscholar-badge--tone-top { color:#7c2d12 !important; background:#ffedd5 !important; border-color:#fb923c !important; }
+      .myscholar-badge--group-cas.myscholar-badge--tone-good { color:#9a3412 !important; background:#fff7ed !important; border-color:#fdba74 !important; }
+      .myscholar-badge--group-cas.myscholar-badge--tone-info { color:#b45309 !important; background:#fffbeb !important; border-color:#fed7aa !important; }
+      .myscholar-badge--group-cas.myscholar-badge--tone-neutral { color:#78350f !important; background:#fefce8 !important; border-color:#fde68a !important; }
+      /* level: 本校等级/CCF/ABDC/FMS/FT50/NPI 等分级类 — 紫罗兰 (Color Hunt #98E8DE #45A9A9 #3E3E75 #4E1F6E) */
+      .myscholar-badge--group-level.myscholar-badge--tone-top { color:#581c87 !important; background:#faf5ff !important; border-color:#c084fc !important; }
+      .myscholar-badge--group-level.myscholar-badge--tone-good { color:#6d28d9 !important; background:#f5f3ff !important; border-color:#c4b5fd !important; }
+      .myscholar-badge--group-level.myscholar-badge--tone-info { color:#7e22ce !important; background:#fdf4ff !important; border-color:#e9d5ff !important; }
+      .myscholar-badge--group-level.myscholar-badge--tone-neutral { color:#6b21a8 !important; background:#fafaf9 !important; border-color:#f3e8ff !important; }
+      /* open: OA 期刊 / arXiv 等开放类 — 水青 (Color Hunt 青色系 #134E4A #0F766E #2DD4BF #F0FDFA) */
+      .myscholar-badge--group-open.myscholar-badge--tone-top { color:#115e59 !important; background:#ccfbf1 !important; border-color:#2dd4bf !important; }
+      .myscholar-badge--group-open.myscholar-badge--tone-good { color:#0f766e !important; background:#f0fdfa !important; border-color:#5eead4 !important; }
+      .myscholar-badge--group-open.myscholar-badge--tone-info { color:#0f766e !important; background:#ecfeff !important; border-color:#99f6e4 !important; }
+      .myscholar-badge--group-open.myscholar-badge--tone-neutral { color:#134e4a !important; background:#f0fdfa !important; border-color:#99f6e4 !important; }
+      /* local: 用户本地 JSON/CSV 导入数据 — 赭石/暖沙 (Color Hunt #FDF0D5 #E9C46A #E76F51 #249D8F) */
+      .myscholar-badge--group-local.myscholar-badge--tone-top { color:#7c2d12 !important; background:#ffedd5 !important; border-color:#e67e22 !important; }
+      .myscholar-badge--group-local.myscholar-badge--tone-good { color:#9a3412 !important; background:#fff7ed !important; border-color:#f59e0b !important; }
+      .myscholar-badge--group-local.myscholar-badge--tone-info { color:#92400e !important; background:#fef3c7 !important; border-color:#fcd34d !important; }
+      .myscholar-badge--group-local.myscholar-badge--tone-neutral { color:#78350f !important; background:#fffbeb !important; border-color:#fde68a !important; }
       .myscholar-badge--loading { color:#64748b !important; background:transparent !important; border-style:dashed !important; cursor:default !important; animation:myscholar-pulse 1.4s ease-in-out infinite !important; }
       @keyframes myscholar-pulse { 50% { opacity:.48; } }
       @media (prefers-color-scheme:dark) {
         .myscholar-badge { background:#1e293b !important; color:#e2e8f0 !important; border-color:#475569 !important; }
-        .myscholar-badge--top { background:#052e16 !important; color:#bbf7d0 !important; border-color:#15803d !important; }
-        .myscholar-badge--good { background:#172554 !important; color:#bfdbfe !important; border-color:#1d4ed8 !important; }
-        .myscholar-badge--info { background:#082f49 !important; color:#bae6fd !important; border-color:#0369a1 !important; }
-        .myscholar-badge--danger { background:#450a0a !important; color:#fecaca !important; border-color:#b91c1c !important; }
+        .myscholar-badge--tone-danger { background:#450a0a !important; color:#fecaca !important; border-color:#b91c1c !important; }
+        .myscholar-badge--group-index.myscholar-badge--tone-top { background:#052e16 !important; color:#bbf7d0 !important; border-color:#15803d !important; }
+        .myscholar-badge--group-index.myscholar-badge--tone-good { background:#052e16 !important; color:#86efac !important; border-color:#166534 !important; }
+        .myscholar-badge--group-index.myscholar-badge--tone-info { background:#022c22 !important; color:#6ee7b7 !important; border-color:#065f46 !important; }
+        .myscholar-badge--group-index.myscholar-badge--tone-neutral { background:#022c22 !important; color:#6ee7b7 !important; border-color:#064e3b !important; }
+        .myscholar-badge--group-sci.myscholar-badge--tone-top { background:#172554 !important; color:#bfdbfe !important; border-color:#1d4ed8 !important; }
+        .myscholar-badge--group-sci.myscholar-badge--tone-good { background:#172554 !important; color:#93c5fd !important; border-color:#1e40af !important; }
+        .myscholar-badge--group-sci.myscholar-badge--tone-info { background:#0c4a6e !important; color:#7dd3fc !important; border-color:#0369a1 !important; }
+        .myscholar-badge--group-sci.myscholar-badge--tone-neutral { background:#082f49 !important; color:#7dd3fc !important; border-color:#0369a1 !important; }
+        .myscholar-badge--group-cas.myscholar-badge--tone-top { background:#431407 !important; color:#fed7aa !important; border-color:#c2410c !important; }
+        .myscholar-badge--group-cas.myscholar-badge--tone-good { background:#431407 !important; color:#fdba74 !important; border-color:#9a3412 !important; }
+        .myscholar-badge--group-cas.myscholar-badge--tone-info { background:#451a03 !important; color:#fcd34d !important; border-color:#b45309 !important; }
+        .myscholar-badge--group-cas.myscholar-badge--tone-neutral { background:#451a03 !important; color:#fcd34d !important; border-color:#78350f !important; }
+        .myscholar-badge--group-level.myscholar-badge--tone-top { background:#3b0764 !important; color:#e9d5ff !important; border-color:#7e22ce !important; }
+        .myscholar-badge--group-level.myscholar-badge--tone-good { background:#3b0764 !important; color:#d8b4fe !important; border-color:#6d28d9 !important; }
+        .myscholar-badge--group-level.myscholar-badge--tone-info { background:#4c1d95 !important; color:#c4b5fd !important; border-color:#581c87 !important; }
+        .myscholar-badge--group-level.myscholar-badge--tone-neutral { background:#2e1065 !important; color:#c4b5fd !important; border-color:#581c87 !important; }
+        .myscholar-badge--group-open.myscholar-badge--tone-top { background:#042f2e !important; color:#5eead4 !important; border-color:#0d9488 !important; }
+        .myscholar-badge--group-open.myscholar-badge--tone-good { background:#042f2e !important; color:#2dd4bf !important; border-color:#0f766e !important; }
+        .myscholar-badge--group-open.myscholar-badge--tone-info { background:#083344 !important; color:#22d3ee !important; border-color:#0e7490 !important; }
+        .myscholar-badge--group-open.myscholar-badge--tone-neutral { background:#164e63 !important; color:#67e8f9 !important; border-color:#0e7490 !important; }
+        .myscholar-badge--group-local.myscholar-badge--tone-top { background:#431407 !important; color:#fed7aa !important; border-color:#c2410c !important; }
+        .myscholar-badge--group-local.myscholar-badge--tone-good { background:#451a03 !important; color:#fdba74 !important; border-color:#9a3412 !important; }
+        .myscholar-badge--group-local.myscholar-badge--tone-info { background:#422006 !important; color:#fcd34d !important; border-color:#a16207 !important; }
+        .myscholar-badge--group-local.myscholar-badge--tone-neutral { background:#451a03 !important; color:#fcd34d !important; border-color:#78350f !important; }
       }
       @media print { .myscholar-badges, #myscholar-ui-host { display:none !important; } }
       @media (prefers-reduced-motion:reduce) { .myscholar-badge--loading { animation:none !important; } }
@@ -2698,7 +2746,7 @@
   }
 
   function makeBadge(metric, detailId) {
-    const button = el('button', `myscholar-badge myscholar-badge--${metric.tone || 'neutral'}`);
+    const button = el('button', `myscholar-badge myscholar-badge--group-${metric.group || 'metric'} myscholar-badge--tone-${metric.tone || 'neutral'}`);
     button.type = 'button';
     button.dataset.detailId = detailId;
     button.dataset.metricId = metric.id;
@@ -2887,7 +2935,7 @@
     } catch (error) {
       if (!container.isConnected) return;
       if (state.config.showMisses) {
-        const failed = el('span', 'myscholar-badge myscholar-badge--danger', '期刊信息 · 查询失败');
+        const failed = el('span', 'myscholar-badge myscholar-badge--group-danger myscholar-badge--tone-danger', '期刊信息 · 查询失败');
         failed.title = cleanText(error.message);
         container.replaceChildren(failed);
       } else container.remove();
