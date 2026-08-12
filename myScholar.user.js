@@ -2751,9 +2751,14 @@
     button.dataset.detailId = detailId;
     button.dataset.metricId = metric.id;
     button.__myscholarMetric = metric;
-    button.setAttribute('aria-label', `${metric.label}：${metric.value}；点击查看来源`);
+    const isRedundant = metric.label === metric.value;
+    button.setAttribute('aria-label', isRedundant ? `${metric.label}；点击查看来源` : `${metric.label}：${metric.value}；点击查看来源`);
     button.title = tooltipText(metric);
-    button.append(setText(el('span', 'myscholar-badge__label'), metric.label), setText(el('span', 'myscholar-badge__value'), metric.value));
+    if (isRedundant) {
+      button.append(setText(el('span', 'myscholar-badge__label'), metric.label));
+    } else {
+      button.append(setText(el('span', 'myscholar-badge__label'), metric.label), setText(el('span', 'myscholar-badge__value'), metric.value));
+    }
     button.addEventListener('mouseenter', () => showTooltip(button));
     button.addEventListener('mouseleave', hideTooltip);
     button.addEventListener('focus', () => showTooltip(button));
