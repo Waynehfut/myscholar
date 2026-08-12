@@ -2191,6 +2191,9 @@
         .myscholar-badge--group-local.myscholar-badge--tone-info { background:#422006 !important; color:#fcd34d !important; border-color:#a16207 !important; }
         .myscholar-badge--group-local.myscholar-badge--tone-neutral { background:#451a03 !important; color:#fcd34d !important; border-color:#78350f !important; }
       }
+      .myscholar-letpub { appearance:none !important; box-sizing:border-box !important; display:inline-flex !important; align-items:center !important; gap:0 !important; max-width:none !important; min-height:22px !important; margin:0 !important; padding:2px 9px !important; border:1px solid #94a3b8 !important; border-radius:999px !important; background:#ffffff !important; color:#475569 !important; font:600 12px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif !important; text-decoration:none !important; vertical-align:middle !important; cursor:pointer !important; box-shadow:none !important; overflow:visible !important; white-space:nowrap !important; transition:background .15s,border-color .15s,color .15s !important; }
+      .myscholar-letpub:hover { background:#0ea5e9 !important; border-color:#0284c7 !important; color:#ffffff !important; }
+      @media (prefers-color-scheme:dark) { .myscholar-letpub { background:#1e293b !important; color:#cbd5e1 !important; border-color:#475569 !important; } .myscholar-letpub:hover { background:#0ea5e9 !important; border-color:#0284c7 !important; color:#ffffff !important; } }
       @media print { .myscholar-badges, #myscholar-ui-host { display:none !important; } }
       @media (prefers-reduced-motion:reduce) { .myscholar-badge--loading { animation:none !important; } }
     `;
@@ -2773,6 +2776,23 @@
     return button;
   }
 
+  function letpubSearchUrl(journalName) {
+    const encoded = encodeURIComponent(cleanText(journalName));
+    return `https://www.letpub.com.cn/index.php?page=journalapp&view=search&searchname=${encoded}`;
+  }
+
+  function makeLetpubButton(journalName) {
+    const url = letpubSearchUrl(journalName);
+    const anchor = document.createElement('a');
+    anchor.className = 'myscholar-letpub';
+    anchor.href = url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.textContent = 'letpub';
+    anchor.title = `在 LetPub 上检索 "${journalName}"`;
+    return anchor;
+  }
+
   function renderDetail(container, detail) {
     rememberMetricOptions(detail.metrics);
     const displayMetrics = filterVisibleMetrics(detail.metrics, state.config.hiddenMetricKeys);
@@ -2797,6 +2817,9 @@
         source: 'MyScholar', note: '点击查看其余已启用标签及每项数据来源。', group: 'journal', tone: 'neutral',
       });
       container.append(makeBadge(moreMetric, detailId));
+    }
+    if (detail.journal) {
+      container.append(makeLetpubButton(detail.journal));
     }
     return true;
   }
@@ -2925,8 +2948,9 @@
       const detail = await annotationQueue.add(() => resolveDescriptor(descriptor));
       if (!container.isConnected) return;
       if (!isDescriptorTargetVisible(descriptor.target) || !descriptor.card?.isConnected || hashString(normalizeTitle(descriptor.target?.textContent)) !== descriptor.nodeSignature) {
+        const processed = state.processed.get(descriptor.target);
+        if (processed?.container === container) processed.done = 'miss';
         container.remove();
-        scheduleScan();
         return;
       }
       if (!detail || !detail.metrics.length) {
@@ -3012,7 +3036,8 @@
       state.visibleObserver?.unobserve(record.container);
       record.container.remove();
       if (record.detailId) state.detailById.delete(record.detailId);
-      state.processed.delete(record.target);
+      const processed = state.processed.get(record.target);
+      if (processed?.container === record.container) processed.done = 'miss';
       state.containerRecords.delete(record);
     }
     currentDescriptors.forEach(queueDescriptor);
@@ -3029,7 +3054,8 @@
       state.visibleObserver?.unobserve(record.container);
       record.container.remove();
       if (record.detailId) state.detailById.delete(record.detailId);
-      state.processed.delete(record.target);
+      const processed = state.processed.get(record.target);
+      if (processed?.container === record.container) processed.done = 'miss';
       state.containerRecords.delete(record);
     }
   }
