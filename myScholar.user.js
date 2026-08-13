@@ -749,6 +749,7 @@
     allMetricOptions,
     normalizeConfig,
     isGoogleScholarHost,
+    gsVenueHint,
   };
 
   if (typeof document === 'undefined' && typeof module !== 'undefined' && module.exports) {
@@ -1489,6 +1490,18 @@
     return cleanText(node?.getAttribute?.('title') || node?.textContent);
   }
 
+  // 从 Google Scholar 的 .gs_a 元信息行（“作者 - 期刊, 年份 - 来源”）提取期刊/会议名；
+  // 预印本行（“作者 - 2023 - arXiv”等）提取不到期刊时返回空串。
+  function gsVenueHint(metaLine) {
+    const text = cleanText(metaLine?.textContent || '');
+    const withYear = text.split(/\s+-\s+/).find((part) => /\b(?:19|20)\d{2}\b/.test(part));
+    if (!withYear) return '';
+    const hint = cleanText(withYear.replace(/[,;]\s*(?:19|20)\d{2}\b.*$/, ''));
+    if (!hint || /^(?:19|20)\d{2}$/.test(hint)) return '';
+    if (/^(?:arxiv|ssrn|preprint|medrxiv|biorxiv|research\s*gate)/i.test(hint)) return '';
+    return hint;
+  }
+
   function descriptorFrom(target, card, site, overrides = {}) {
     const title = cleanPaperTitle(overrides.title || target?.textContent);
     const context = cleanText(card?.textContent);
@@ -1526,8 +1539,18 @@
       id: 'google-scholar',
       match: isGoogleScholarHost,
       scan: () => [
-        ...[...document.querySelectorAll('.gs_r .gs_rt')].map((target) => descriptorFrom(target, target.closest('.gs_r'), 'Google Scholar')),
-        ...[...document.querySelectorAll('#gsc_a_b tr.gsc_a_tr a.gsc_a_at')].map((target) => descriptorFrom(target, target.closest('tr.gsc_a_tr'), 'Google Scholar 作者页')),
+        ...[...document.querySelectorAll('.gs_r .gs_rt')].map((target) => {
+          const card = target.closest('.gs_r');
+          return descriptorFrom(target, card, 'Google Scholar', {
+            journalHint: gsVenueHint(card?.querySelector('.gs_a')),
+          });
+        }),
+        ...[...document.querySelectorAll('#gsc_a_b tr.gsc_a_tr a.gsc_a_at')].map((target) => {
+          const card = target.closest('tr.gsc_a_tr');
+          return descriptorFrom(target, card, 'Google Scholar 作者页', {
+            journalHint: nodeLabel(card?.querySelector('.gs_gray')),
+          });
+        }),
       ],
     },
     {
@@ -1537,7 +1560,9 @@
         const card = target.closest('.docsum-content, article, main') || target.parentElement;
         return descriptorFrom(target, card, 'PubMed', {
           doi: target.matches('h1') ? pageMeta('citation_doi') : findDoiInElement(card),
-          journalHint: cleanText(card?.querySelector('.full-journal-citation')?.textContent).split(/[.;]/)[0],
+          journalHint: target.matches('h1')
+            ? (pageMeta('citation_journal_title') || cleanText(card?.querySelector('.full-journal-citation')?.textContent).split(/[.;]/)[0])
+            : cleanText(card?.querySelector('.full-journal-citation')?.textContent).split(/[.;]/)[0],
         });
       }),
     },
@@ -1562,16 +1587,6 @@
         });
         return results;
       },
-    },
-    {
-      id: 'arxiv',
-      match: (host) => host === 'arxiv.org',
-      scan: () => [...document.querySelectorAll('li.arxiv-result p.title, h1.title')].map((target) => descriptorFrom(
-        target,
-        target.closest('li.arxiv-result, main') || target.parentElement,
-        'arXiv',
-        { title: cleanText(target.textContent).replace(/^Title:\s*/i, ''), doi: target.matches('h1') ? pageMeta('citation_doi') : '' },
-      )),
     },
     {
       id: 'cnki',
@@ -1633,11 +1648,16 @@
     {
       id: 'science-direct',
       match: (host) => host === 'www.sciencedirect.com',
-      scan: () => [...document.querySelectorAll('a.result-list-title-link, h1.article-title, h1#screen-reader-main-title')]
-        .map((target) => descriptorFrom(target, target.closest('li.ResultItem, article, main') || target.parentElement, 'ScienceDirect', {
-          doi: target.matches('h1') ? pageMeta('citation_doi') : findDoiInElement(target.closest('li.ResultItem, article, main')),
-          journalHint: target.matches('h1') ? pageMeta('citation_journal_title') : '',
-        })),
+      scan: () => [...document.querySelectorAll('a.result-list-title-link, h1.article-title, h1.content-title, h1#screen-reader-main-title')]
+        .map((target) => {
+          const card = target.closest('li.ResultItem, article, main') || target.parentElement;
+          return descriptorFrom(target, card, 'ScienceDirect', {
+            doi: target.matches('h1') ? pageMeta('citation_doi') : findDoiInElement(card),
+            journalHint: target.matches('h1')
+              ? pageMeta('citation_journal_title')
+              : nodeLabel(card?.querySelector('a.subtype-srctitle-link, h4.srctitle-date-fields a[href], .srctitle-date-fields a[href]')),
+          });
+        }),
     },
     {
       id: 'nature',
@@ -1652,35 +1672,75 @@
     {
       id: 'springer',
       match: (host) => host === 'link.springer.com',
-      scan: () => [...document.querySelectorAll('h3.c-card__title a, h1.c-article-title')]
-        .map((target) => descriptorFrom(target, target.closest('article, main') || target.parentElement, 'Springer', {
-          doi: target.matches('h1') ? pageMeta('citation_doi') : '',
-          journalHint: target.matches('h1') ? pageMeta('citation_journal_title') : '',
-        })),
+      scan: () => [...document.querySelectorAll('h3.app-card-open__heading a.app-card-open__link, h3.c-card__title a, h1.c-article-title')]
+        .map((target) => {
+          const card = target.closest('li.app-card-open, .c-card, article, main') || target.parentElement;
+          return descriptorFrom(target, card, 'Springer', {
+            doi: target.matches('h1') ? pageMeta('citation_doi') : findDoiInElement(card),
+            journalHint: target.matches('h1')
+              ? pageMeta('citation_journal_title')
+              : nodeLabel(card?.querySelector('a[data-test="parent"]')),
+          });
+        }),
     },
     {
       id: 'wiley',
       match: (host) => host === 'onlinelibrary.wiley.com',
       scan: () => [...document.querySelectorAll('a.publication_title, h1.citation__title')]
-        .map((target) => descriptorFrom(target, target.closest('article, main') || target.parentElement, 'Wiley', {
-          doi: target.matches('h1') ? pageMeta('citation_doi') : '',
-          journalHint: target.matches('h1') ? pageMeta('citation_journal_title') : '',
-        })),
+        .map((target) => {
+          const card = target.closest('.item__body, article, main') || target.parentElement;
+          return descriptorFrom(target, card, 'Wiley', {
+            doi: target.matches('h1') ? pageMeta('citation_doi') : findDoiInElement(card),
+            journalHint: target.matches('h1')
+              ? pageMeta('citation_journal_title')
+              : nodeLabel(card?.querySelector('a.meta__serial, .meta__serial')),
+          });
+        }),
     },
     {
       id: 'ieee',
       match: (host) => host === 'ieeexplore.ieee.org',
-      scan: () => [...document.querySelectorAll('h2.result-item-title a, h1.document-title')]
-        .map((target) => descriptorFrom(target, target.closest('.List-results-items, article, main') || target.parentElement, 'IEEE Xplore', {
-          doi: target.matches('h1') ? pageMeta('citation_doi') : '',
-          journalHint: target.matches('h1') ? pageMeta('citation_journal_title') : '',
-        })),
+      scan: () => {
+        const descriptors = [];
+        // 详情页：新版 Angular 页面不再输出 citation_* meta，DOI 与期刊名从页面 DOM 提取
+        document.querySelectorAll('h1.document-title').forEach((target) => {
+          const card = target.closest('.List-results-items, article, main') || target.parentElement;
+          descriptors.push(descriptorFrom(target, card, 'IEEE Xplore', {
+            doi: pageMeta('citation_doi')
+              || publicationDoi(card?.querySelector('.stats-document-abstract-doi a[href], a[href*="doi.org/10."]')?.getAttribute('href'))
+              || findDoiInElement(card),
+            journalHint: pageMeta('citation_journal_title')
+              || nodeLabel(card?.querySelector('a.stats-document-abstract-publishedIn')),
+            journalHintStrict: true,
+          }));
+        });
+        // 列表页：新版搜索结果标题在 h3 卡片链接，期刊名在 .description 首个链接
+        document.querySelectorAll('.List-results-items h3 a[href*="/document/"], h2.result-item-title a').forEach((target) => {
+          const card = target.closest('.List-results-items, article, main') || target.parentElement;
+          descriptors.push(descriptorFrom(target, card, 'IEEE Xplore', {
+            journalHint: nodeLabel(card?.querySelector('.description a[href], a[href*="/xpl/RecentIssue.jsp"], a[href*="/xpl/conhome/"]')),
+          }));
+        });
+        return descriptors;
+      },
     },
     {
       id: 'dblp',
       match: (host) => host === 'dblp.org',
-      scan: () => [...document.querySelectorAll('li.entry.article article cite.data .title')]
-        .map((target) => descriptorFrom(target, target.closest('li.entry') || target.parentElement, 'DBLP')),
+      scan: () => [...document.querySelectorAll('li.entry cite.data .title')]
+        .map((target) => {
+          const card = target.closest('li.entry') || target.parentElement;
+          // 新版 DBLP 不再用 article 包裹 cite.data，期刊/会议名在 itemprop=isPartOf 链接里
+          const venue = card?.querySelector('cite.data [itemprop="isPartOf"] [itemprop="name"], cite.data [itemprop="isPartOf"]');
+          // TOC 页逐条不带期刊信息时回退到页面标题（如 “IEEE Transactions on …, Volume 38”）
+          const pageHeading = cleanText(document.querySelector('#main h1')?.textContent);
+          const pageVenue = /,?\s*Volume\s+\d+/i.test(pageHeading)
+            ? cleanText(pageHeading.replace(/\s*,\s*Volume\s+\d+.*$/i, ''))
+            : '';
+          return descriptorFrom(target, card, 'DBLP', {
+            journalHint: nodeLabel(venue) || pageVenue,
+          });
+        }),
     },
   ];
 
@@ -2417,7 +2477,7 @@
     loading.setAttribute('aria-live', 'polite');
     container.append(loading);
     descriptor.target.insertAdjacentElement('afterend', container);
-    state.containerRecords.add({ container, target: descriptor.target, card: descriptor.card, detailId: '' });
+    state.containerRecords.add({ container, target: descriptor.target, card: descriptor.card, detailId: '', descriptor });
     return container;
   }
 
@@ -2639,7 +2699,8 @@
       const detailPromise = annotationQueue.add(() => resolveDescriptor(descriptor, onPartial));
       const detail = await rejectAfter(detailPromise, 45000);
       if (!container.isConnected) return;
-      if (!isDescriptorTargetVisible(descriptor.target) || !descriptor.card?.isConnected || hashString(normalizeTitle(descriptor.target?.textContent)) !== descriptor.nodeSignature) {
+      // 目标被页面替换（断连）时放弃本次渲染；仅暂时不可见则保留，恢复可见后徽章仍在
+      if (!descriptor.target.isConnected || !descriptor.card?.isConnected || hashString(normalizeTitle(descriptor.target?.textContent)) !== descriptor.nodeSignature) {
         const processed = state.processed.get(descriptor.target);
         const retryAt = Date.now() + 5000;
         if (processed?.container === container) { processed.done = 'cooldown'; processed.retryAt = retryAt; }
@@ -2750,6 +2811,12 @@
     const currentTargets = new Set(currentDescriptors.map((descriptor) => descriptor.target));
     for (const record of [...state.containerRecords]) {
       if (currentTargets.has(record.target)) continue;
+      // 目标只是暂时不可见（如祖先 aria-hidden）时不移除：恢复可见后徽章仍在
+      const structurallyPresent = record.container.isConnected
+        && record.target.isConnected
+        && record.card?.contains?.(record.target)
+        && record.card.contains(record.container);
+      if (structurallyPresent) continue;
       state.visibleObserver?.unobserve(record.container);
       record.container.remove();
       if (record.detailId) state.detailById.delete(record.detailId);
@@ -2765,10 +2832,52 @@
     currentDescriptors.forEach(queueDescriptor);
   }
 
+  function findReplacementTarget(record) {
+    const target = record.target;
+    if (!target?.tagName) return null;
+    const expected = record.container?.dataset?.myscholarFor
+      || hashString(normalizeTitle(target.textContent));
+    const candidates = document.querySelectorAll(target.tagName);
+    for (const strictClass of [true, false]) {
+      for (const node of candidates) {
+        if (!node.isConnected || node === target) continue;
+        if (strictClass && String(node.className) !== String(target.className)) continue;
+        if (!isDescriptorTargetVisible(node)) continue;
+        if (node.closest('.myscholar-badges, #myscholar-ui-host')) continue;
+        if (hashString(normalizeTitle(node.textContent)) === expected) return node;
+      }
+    }
+    return null;
+  }
+
   function cleanupContainers() {
     for (const record of [...state.containerRecords]) {
+      // SPA 重渲染可能整体替换 DOM 子树（如 ScienceDirect 文章头部）：此时徽章容器
+      // 和目标节点一起被页面丢弃。优先把已渲染的徽章挂到新节点上，避免消失后等
+      // 下一次扫描才补标；新节点尚未出现时按 miss 处理，让插入触发的扫描立即补标注。
+      const targetReplaced = !record.target.isConnected;
+      if (targetReplaced) {
+        const replacement = findReplacementTarget(record);
+        if (replacement) {
+          replacement.insertAdjacentElement('afterend', record.container);
+          const processed = state.processed.get(record.target);
+          if (processed?.container === record.container) {
+            state.processed.delete(record.target);
+            state.processed.set(replacement, processed);
+          }
+          const newCard = replacement.closest('article, main') || replacement.parentElement;
+          record.target = replacement;
+          record.card = newCard;
+          // 同步更新在途 descriptor 的引用，让进行中的查询继续渲染到迁移后的容器
+          if (record.descriptor) {
+            record.descriptor.target = replacement;
+            record.descriptor.card = newCard;
+          }
+          continue;
+        }
+      }
+      // 仅因祖先 [hidden]/aria-hidden 而暂时不可见时不移除：内容恢复可见时徽章仍在
       const valid = record.container.isConnected
-        && isDescriptorTargetVisible(record.target)
         && record.card?.isConnected
         && record.card.contains(record.target)
         && record.card.contains(record.container);
@@ -2782,10 +2891,14 @@
       if (record.detailId) state.detailById.delete(record.detailId);
       const processed = state.processed.get(record.target);
       if (processed?.container === record.container) {
-        const retryAt = Date.now() + 5000;
-        processed.done = 'cooldown';
-        processed.retryAt = retryAt;
-        if (processed.signature) markSignatureCooldown(processed.signature, retryAt);
+        if (targetReplaced) {
+          processed.done = 'miss';
+        } else {
+          const retryAt = Date.now() + 5000;
+          processed.done = 'cooldown';
+          processed.retryAt = retryAt;
+          if (processed.signature) markSignatureCooldown(processed.signature, retryAt);
+        }
       }
       state.containerRecords.delete(record);
     }
