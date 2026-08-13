@@ -5,14 +5,14 @@
 ## 安装
 
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/)。
-2. 打开脚本管理器，选择「添加新脚本」。
-3. 清空示例内容，把 [myScholar.user.js](./myScholar.user.js) 全文粘贴进去并保存。
+2. 推荐直接在 [Greasy Fork](https://greasyfork.org/zh-CN/scripts/591001-myscholar-%E6%9C%9F%E5%88%8A%E6%A0%87%E7%AD%BE) 安装发布版（可自动更新）。
+3. 或打开脚本管理器，选择「添加新脚本」，清空示例内容，把 [myScholar.user.js](./myScholar.user.js) 全文粘贴进去并保存。
 4. 通过扩展图标菜单中的「`MyScholar：设置`」完成首次配置。
 
 
 ## 支持的网站
 
-默认在以下站点使用专用适配器：Google Scholar、PubMed、Semantic Scholar、arXiv、CNKI、百度学术、Web of Science、ScienceDirect、Nature、Springer、Wiley、IEEE、DBLP。
+默认在以下站点使用专用适配器：Google Scholar、PubMed、Semantic Scholar、CNKI、百度学术、Web of Science、ScienceDirect、Nature、Springer、Wiley、IEEE、DBLP。
 
 其他出版社网站可以在「网站范围」里按域名自行添加，或开启「任意 HTTPS 论文详情页结构化 DOI 自动识别」（默认关闭）。
 
