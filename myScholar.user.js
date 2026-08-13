@@ -750,6 +750,7 @@
     normalizeConfig,
     isGoogleScholarHost,
     gsVenueHint,
+    gsProfileVenueHint,
   };
 
   if (typeof document === 'undefined' && typeof module !== 'undefined' && module.exports) {
@@ -1494,12 +1495,28 @@
   // 预印本行（“作者 - 2023 - arXiv”等）提取不到期刊时返回空串。
   function gsVenueHint(metaLine) {
     const text = cleanText(metaLine?.textContent || '');
-    const withYear = text.split(/\s+-\s+/).find((part) => /\b(?:19|20)\d{2}\b/.test(part));
+    const parts = text.split(/\s+-\s+/);
+    const withYear = parts.find((part) => /\b(?:19|20)\d{2}\b/.test(part));
     if (!withYear) return '';
+    // 年份落在首段且后面还有其他段（如“作者, 年份 - arXiv”）时该行没有期刊段，
+    // 返回空串，避免把作者名单误识别为期刊名。
+    if (parts.indexOf(withYear) === 0 && parts.length > 1) return '';
     const hint = cleanText(withYear.replace(/[,;]\s*(?:19|20)\d{2}\b.*$/, ''));
     if (!hint || /^(?:19|20)\d{2}$/.test(hint)) return '';
     if (/^(?:arxiv|ssrn|preprint|medrxiv|biorxiv|research\s*gate)/i.test(hint)) return '';
     return hint;
+  }
+
+  // 从 Google Scholar 作者页每行的第二个 .gs_gray（“期刊名 卷(期), 页码, 年份”）提取期刊/会议名；
+  // 预印本行（arXiv 等）返回空串；该行缺省时也不回退到作者名单，避免把姓名误当期刊。
+  function gsProfileVenueHint(metaLine) {
+    let text = cleanText(metaLine?.textContent || '');
+    if (!text || /^(?:arxiv|ssrn|preprint|medrxiv|biorxiv|research\s*gate)/i.test(text)) return '';
+    text = text.replace(/[,;]\s*(?:19|20)\d{2}\b.*$/, '');
+    text = text.replace(/\s+\d+\s*\(\s*\d+\s*\)[^]*$/, '');
+    text = text.replace(/[,;]\s*\d+[^]*$/, '');
+    const hint = cleanText(text.replace(/[,;]+$/, ''));
+    return hint && !/^(?:19|20)\d{2}$/.test(hint) ? hint : '';
   }
 
   function descriptorFrom(target, card, site, overrides = {}) {
@@ -1547,8 +1564,12 @@
         }),
         ...[...document.querySelectorAll('#gsc_a_b tr.gsc_a_tr a.gsc_a_at')].map((target) => {
           const card = target.closest('tr.gsc_a_tr');
+          // 作者页每行有两个 .gs_gray：第一个是作者名单，第二个才是期刊/会议；
+          // 缺少第二个（预印本等）时返回空串，而不是把姓名识别成期刊名。
+          const grayNodes = card?.querySelectorAll('.gs_gray');
+          const venueNode = grayNodes && grayNodes.length > 1 ? grayNodes[grayNodes.length - 1] : null;
           return descriptorFrom(target, card, 'Google Scholar 作者页', {
-            journalHint: nodeLabel(card?.querySelector('.gs_gray')),
+            journalHint: gsProfileVenueHint(venueNode),
           });
         }),
       ],
