@@ -39,24 +39,14 @@
 
 ### 标签显示
 
-在「标签显示」中逐项启用或隐藏需要的标签（期刊、DOAJ、CWTS Core、OA、PubMed、MEDLINE、PMC、NPI、EasyScholar 等级、本地数据字段等）。隐藏的项目不会出现在标题旁、`+N` 计数或详情面板中。
+在「标签显示」中逐项启用或隐藏需要的标签（EasyScholar 等级、本地数据字段等）。隐藏的项目不会出现在标题旁、`+N` 计数或详情面板中。
 
 ### 数据源
-
-以下默认开放数据源无需密钥：
-
-- **Crossref**：DOI 与期刊匹配；
-- **OpenAlex**：DOAJ、CWTS Core、OA 和被引指标（可在官网申请免费 API Key 填入以获得更稳定的额度）；
-- **NLM Catalog**（默认关闭）：按 ISSN 判定 MEDLINE 当前收录与 PMC 期刊列表。
 
 需要 JCR/SCI、分区、CSSCI 等分级数据时：
 
 - 在「数据源」填入你自己的 [EasyScholar Open API](https://www.easyscholar.cc/console/user/open) Secret Key（仅保存在该脚本的本地存储中，只发送给 `www.easyscholar.cc`）；或
 - 在「本地数据」导入你合法拥有的 JSON/CSV 文件（只按 ISSN 或规范化期刊名匹配）。
-
-### 挪威 NPI 等级
-
-在「数据源」中开启后，首次使用时会下载官方当前 CSV 并按 ISSN 匹配 L2 / L1 / L0 / X，默认缓存 30 天。
 
 ## License
 

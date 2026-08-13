@@ -15,11 +15,7 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
-// @connect      api.crossref.org
-// @connect      api.openalex.org
-// @connect      eutils.ncbi.nlm.nih.gov
 // @connect      www.easyscholar.cc
-// @connect      kanalregister.hkdir.no
 // ==/UserScript==
 
 (function () {
@@ -30,19 +26,11 @@
   const CACHE_KEY = 'myscholar:cache:v1';
   const LOCAL_DATA_KEY = 'myscholar:local-data:v1';
   const LABEL_CATALOG_KEY = 'myscholar:label-catalog:v1';
-  const NPI_CACHE_KEY = 'myscholar:npi-cache:v1';
-  const NPI_LEASE_KEY = 'myscholar:npi-lease:v1';
   const ALLOWED_REQUEST_HOSTS = new Set([
-    'api.crossref.org',
-    'api.openalex.org',
-    'eutils.ncbi.nlm.nih.gov',
     'www.easyscholar.cc',
-    'kanalregister.hkdir.no',
   ]);
   const CONTEXT_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   const DISTRIBUTED_GAPS = Object.freeze({
-    'api.crossref.org': 1100,
-    'eutils.ncbi.nlm.nih.gov': 360,
     'www.easyscholar.cc': 400,
   });
 
@@ -51,11 +39,6 @@
     enableKnownSites: true,
     enableDoiAnywhere: false,
     customSiteRules: [],
-    enableOpenAlex: true,
-    enableNlm: false,
-    enableNpi: false,
-    openAlexApiKey: '',
-    crossrefEmail: '',
     easyScholarKey: '',
     easyScholarProfileId: '',
     maxBadges: 6,
@@ -291,64 +274,6 @@
     url.searchParams.set('secretKey', cleanText(secretKey));
     url.searchParams.set('publicationName', cleanText(publicationName));
     return url.toString();
-  }
-
-  function yearFromCrossref(item) {
-    return yearsFromCrossref(item)[0] || null;
-  }
-
-  function yearsFromCrossref(item) {
-    const candidates = [item?.published, item?.['published-online'], item?.['published-print'], item?.issued];
-    const years = [];
-    for (const candidate of candidates) {
-      const year = candidate?.['date-parts']?.[0]?.[0];
-      if (Number.isInteger(year) && !years.includes(year)) years.push(year);
-    }
-    return years;
-  }
-
-  function selectCrossrefCandidate(items, query) {
-    const queryTitle = cleanText(query?.title);
-    if (!queryTitle) return null;
-    const candidates = [];
-    const hintKey = normalizeJournal(query?.journalHint);
-    for (const item of Array.isArray(items) ? items : []) {
-      const candidateTitle = cleanText(Array.isArray(item?.title) ? item.title[0] : item?.title);
-      if (!candidateTitle) continue;
-      const similarity = titleSimilarity(queryTitle, candidateTitle);
-      const candidateYears = yearsFromCrossref(item);
-      const hasComparableYears = Boolean(query?.year && candidateYears.length);
-      const yearDistance = hasComparableYears
-        ? Math.min(...candidateYears.map((year) => Math.abs(Number(query.year) - year)))
-        : null;
-      if (yearDistance != null && yearDistance > 1) continue;
-      const yearMatches = yearDistance === 0;
-      const candidateJournal = cleanText(Array.isArray(item?.['container-title']) ? item['container-title'][0] : item?.['container-title']);
-      const candidateJournalKey = normalizeJournal(candidateJournal);
-      const journalMatches = Boolean(hintKey && candidateJournalKey && (
-        hintKey === candidateJournalKey
-        || (hintKey.length >= 8 && candidateJournalKey.length >= 8 && (hintKey.includes(candidateJournalKey) || candidateJournalKey.includes(hintKey)))
-      ));
-      const journalConflicts = Boolean(hintKey && candidateJournalKey && !journalMatches);
-      const adjusted = similarity + (yearMatches ? 0.025 : 0) + (journalMatches ? 0.08 : 0) - (journalConflicts ? 0.06 : 0);
-      candidates.push({
-        item, similarity, adjusted, yearMatches, yearDistance, candidateYears, candidateTitle,
-        candidateJournal, journalMatches, journalConflicts,
-      });
-    }
-    candidates.sort((left, right) => right.adjusted - left.adjusted);
-    const best = candidates[0];
-    if (!best) return null;
-    const threshold = best.yearMatches && query?.year ? 0.81 : 0.84;
-    if (best.similarity < threshold) return null;
-    if (query?.journalHintStrict && hintKey && best.journalConflicts) return null;
-    const runnerUp = candidates[1];
-    if (runnerUp && Math.abs(best.adjusted - runnerUp.adjusted) < 0.025) {
-      const bestId = normalizeDoi(best.item?.DOI) || normalizeJournal(best.candidateJournal);
-      const runnerId = normalizeDoi(runnerUp.item?.DOI) || normalizeJournal(runnerUp.candidateJournal);
-      if (bestId && runnerId && bestId !== runnerId && !best.journalMatches) return null;
-    }
-    return best;
   }
 
   function displayValue(value) {
@@ -601,58 +526,6 @@
       : null;
   }
 
-  function findHeader(headers, patterns) {
-    const normalized = headers.map((header) => normalizeTitle(header));
-    for (const pattern of patterns) {
-      const index = normalized.findIndex((header) => pattern.test(header));
-      if (index >= 0) return index;
-    }
-    return -1;
-  }
-
-  function parseNpiCsv(raw) {
-    const rows = parseDelimited(raw, ';');
-    const headers = (rows.shift() || []).map(cleanText);
-    const currentYear = new Date().getFullYear();
-    const titleIndex = findHeader(headers, [/^international title$/, /^original title$/, /journal.*title/, /channel.*title/, /^title$/, /tidsskrift.*navn/]);
-    const printIndex = findHeader(headers, [/print.*issn/, /^issn$/, /p issn/]);
-    const onlineIndex = findHeader(headers, [/online.*issn/, /electronic.*issn/, /e issn/]);
-    let levelIndex = findHeader(headers, [/scientific.*level/, /academic.*level/, /^level$/, /niv/]);
-    const yearIndex = findHeader(headers, [/level.*year/, /^year$/, /arstall/, /årstall/]);
-    let levelYear = '';
-    let yearlyLevels = [];
-    if (levelIndex < 0) {
-      yearlyLevels = headers
-        .map((header, index) => ({ index, match: normalizeTitle(header).match(/^level\s+((?:19|20)\d{2})$/) }))
-        .filter((item) => item.match)
-        .map((item) => ({ index: item.index, year: Number(item.match[1]) }))
-        .sort((left, right) => right.year - left.year);
-      const selected = yearlyLevels.find((item) => item.year <= currentYear) || yearlyLevels[0];
-      if (selected) {
-        levelIndex = selected.index;
-        levelYear = String(selected.year);
-      }
-    }
-    if (levelIndex < 0 || (printIndex < 0 && onlineIndex < 0)) return [];
-    return rows.map((row) => {
-      let level = cleanText(row[levelIndex]);
-      let resolvedYear = levelYear || (yearIndex >= 0 ? cleanText(row[yearIndex]) : '');
-      if (!level && yearlyLevels.length) {
-        const previous = yearlyLevels.find((item) => item.year <= currentYear && cleanText(row[item.index]));
-        if (previous) {
-          level = cleanText(row[previous.index]);
-          resolvedYear = String(previous.year);
-        }
-      }
-      return {
-        journal: titleIndex >= 0 ? cleanText(row[titleIndex]) : '',
-        issns: parseIssnList([printIndex >= 0 ? row[printIndex] : '', onlineIndex >= 0 ? row[onlineIndex] : '']),
-        level,
-        year: resolvedYear,
-      };
-    }).filter((item) => item.issns.length && item.level);
-  }
-
   function metricDedupe(metrics) {
     const seen = new Set();
     return (metrics || [])
@@ -710,7 +583,6 @@
     if (!key) return '';
     const custom = key.match(/^easy:custom:([^:]+)/);
     if (custom) return `easy:custom:${custom[1]}`;
-    if (/^npi:/i.test(key)) return 'npi:level';
     const legacyLocal = key.match(/^local:\d+:\d+:(.+)$/);
     if (legacyLocal) return `local:${legacyLocal[1]}`;
     const easy = key.match(/^easy:(.+)$/);
@@ -755,9 +627,7 @@
   }
 
   const VISIBLE_BY_DEFAULT = Object.freeze(new Set([
-    'openalex:retracted',
-    'openalex:doaj',
-    'openalex:oa-journal',
+    'journal:name',
     'easy:sciwarn',
     'easy:xrWarn',
     'easy:sciif',
@@ -790,16 +660,6 @@
   const FIXED_LABEL_OPTIONS = Object.freeze((() => {
     const options = [
       { key: 'journal:name', label: '期刊 / 出版来源', group: '基本信息' },
-      { key: 'openalex:retracted', label: '论文状态（撤稿）', group: '风险与状态' },
-      { key: 'openalex:doaj', label: 'DOAJ', group: '开放索引与状态' },
-      { key: 'openalex:cwts-core', label: 'CWTS Core', group: '开放索引与状态' },
-      { key: 'openalex:oa-journal', label: '开放获取 / OA 期刊', group: '开放索引与状态' },
-      { key: 'openalex:pubmed-work', label: 'PubMed 论文收录', group: '医学收录' },
-      { key: 'openalex:arxiv-work', label: 'arXiv 版本收录', group: '开放索引与状态' },
-      { key: 'nlm:medline', label: 'MEDLINE 当前收录', group: '医学收录' },
-      { key: 'nlm:pmc', label: 'PMC 期刊列表', group: '医学收录' },
-      { key: 'openalex:2yr', label: 'OpenAlex 2 年平均被引', group: '其他开放指标' },
-      { key: 'npi:level', label: 'NPI Norway 等级', group: '其他分级' },
     ];
     const seen = new Set(options.map((option) => option.key));
     Object.entries(EASY_FIELDS).forEach(([field, definition]) => {
@@ -871,15 +731,12 @@
     rejectAfter,
     parseRetryAfter,
     easyScholarRequestUrl,
-    isValidNpiLease,
     isDescriptorTargetVisible,
-    selectCrossrefCandidate,
     parseEasyScholar,
     parseDelimited,
     parseLocalDataset,
     indexLocalDataset,
     findLocalRecord,
-    parseNpiCsv,
     metricDedupe,
     dedupeDescriptors,
     makeMetric,
@@ -891,7 +748,6 @@
     mergeLabelCatalogs,
     allMetricOptions,
     normalizeConfig,
-    isConfirmedJournalRecord,
     isGoogleScholarHost,
   };
 
@@ -918,8 +774,6 @@
     globalStylesAdded: false,
     scanTimer: null,
     workInFlight: new Map(),
-    npiPromise: null,
-    npiIndex: null,
     ui: null,
     lastUrl: location.href,
     containerRecords: new Set(),
@@ -1187,9 +1041,6 @@
     }
   }
 
-  const crossrefQueue = new RateQueue(1, 1050);
-  const openAlexQueue = new RateQueue(2, 120);
-  const nlmQueue = new RateQueue(1, 350);
   const easyQueue = new RateQueue(2, 350);
   const annotationQueue = new RateQueue(3, 25);
 
@@ -1348,218 +1199,6 @@
     throw lastError;
   }
 
-  function extractIssns(item) {
-    return [...new Set([
-      ...(Array.isArray(item?.ISSN) ? item.ISSN : []),
-      ...(Array.isArray(item?.issn) ? item.issn : []),
-      item?.issn_l,
-    ].map(normalizeIssn).filter(Boolean))];
-  }
-
-  function crossrefUrl(path, params = {}) {
-    const url = new URL(`https://api.crossref.org/${path.replace(/^\//, '')}`);
-    Object.entries(params).forEach(([key, value]) => {
-      if (value != null && value !== '') url.searchParams.set(key, String(value));
-    });
-    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(state.config.crossrefEmail)) {
-      url.searchParams.set('mailto', state.config.crossrefEmail);
-    }
-    return url.toString();
-  }
-
-  function normalizeCrossrefWork(item, match) {
-    if (!item) return null;
-    return {
-      title: cleanText(Array.isArray(item.title) ? item.title[0] : item.title),
-      doi: normalizeDoi(item.DOI),
-      journal: cleanText(Array.isArray(item['container-title']) ? item['container-title'][0] : item['container-title']),
-      issns: extractIssns(item),
-      publisher: cleanText(item.publisher),
-      year: yearFromCrossref(item),
-      years: yearsFromCrossref(item),
-      type: cleanText(item.type),
-      match,
-    };
-  }
-
-  async function lookupCrossref(descriptor) {
-    const doi = normalizeDoi(descriptor.doi);
-    const runtimeGuard = descriptor.runtimeGuard;
-    if (runtimeGuard && !runtimeGuard()) return null;
-    if (doi) {
-      const rawRecord = await withCache(`crossref:doi:${doi}`, 30 * 24 * 60 * 60 * 1000, () => crossrefQueue.add(async () => {
-        const payload = await requestWithRetry(crossrefUrl(`works/${encodeURIComponent(doi)}`), { runtimeGuard });
-        return normalizeCrossrefWork(payload?.message, null);
-      }));
-      if (runtimeGuard && !runtimeGuard()) return null;
-      const record = rawRecord;
-      if (!record) return null;
-      const returnedTitle = record.title;
-      const similarity = titleSimilarity(descriptor.title, returnedTitle);
-      if (descriptor.title && returnedTitle && similarity < 0.78) return null;
-      const yearDistance = descriptor.year && record.years?.length
-        ? Math.min(...record.years.map((year) => Math.abs(Number(descriptor.year) - Number(year))))
-        : null;
-      return {
-        ...record,
-        match: {
-          method: 'DOI',
-          confidence: descriptor.title && returnedTitle ? similarity : 1,
-          queryTitle: descriptor.title,
-          matchedTitle: returnedTitle,
-          yearDistance,
-        },
-      };
-    }
-    if (!descriptor.journalHint && isUnsafeTitleOnlyQuery(descriptor.title)) return null;
-    const queryKey = hashString([
-      normalizeTitle(descriptor.title), descriptor.year || '', normalizeJournal(descriptor.journalHint), descriptor.stableCardId || '',
-    ].join(':'));
-    const record = await withCache(`crossref:title:${queryKey}`, 30 * 24 * 60 * 60 * 1000, () => crossrefQueue.add(async () => {
-      const payload = await requestWithRetry(crossrefUrl('works', {
-        'query.title': descriptor.title,
-        rows: 5,
-        filter: 'type:journal-article',
-        select: 'DOI,title,container-title,ISSN,type,published,published-online,published-print,publisher,score',
-      }), { runtimeGuard });
-      const selected = selectCrossrefCandidate(payload?.message?.items, descriptor);
-      if (!selected) return null;
-      return normalizeCrossrefWork(selected.item, {
-        method: '题名',
-        confidence: selected.similarity,
-        queryTitle: descriptor.title,
-        matchedTitle: selected.candidateTitle,
-        yearDistance: selected.yearDistance,
-      });
-    }));
-    return runtimeGuard && !runtimeGuard() ? null : record;
-  }
-
-  function openAlexUrl(path, params = {}) {
-    const url = new URL(`https://api.openalex.org/${path.replace(/^\//, '')}`);
-    Object.entries(params).forEach(([key, value]) => {
-      if (value != null && value !== '') url.searchParams.set(key, String(value));
-    });
-    if (cleanText(state.config.openAlexApiKey)) url.searchParams.set('api_key', cleanText(state.config.openAlexApiKey));
-    return url.toString();
-  }
-
-  async function lookupOpenAlex(doi, runtimeGuard) {
-    const normalized = normalizeDoi(doi);
-    if (!normalized || !state.config.enableOpenAlex) return null;
-    if (runtimeGuard && !runtimeGuard()) return null;
-    const work = await withCache(`openalex:work:${normalized}`, 14 * 24 * 60 * 60 * 1000, () => openAlexQueue.add(() => requestWithRetry(
-      openAlexUrl(`works/${encodeURIComponent(`doi:${normalized}`)}`, {
-        select: 'id,display_name,doi,publication_year,type,is_retracted,primary_location,open_access,indexed_in',
-      }),
-      { runtimeGuard },
-    ))).catch(() => null);
-    if (!work || (runtimeGuard && !runtimeGuard())) return null;
-    const sourceId = cleanText(work?.primary_location?.source?.id).split('/').pop();
-    let source = work?.primary_location?.source || null;
-    if (sourceId) {
-      const hydratedSource = await withCache(`openalex:source:${sourceId}`, 45 * 24 * 60 * 60 * 1000, () => openAlexQueue.add(() => requestWithRetry(
-        openAlexUrl(`sources/${encodeURIComponent(sourceId)}`, {
-          select: 'id,display_name,issn_l,issn,type,is_oa,is_in_doaj,is_core,summary_stats,host_organization_name',
-        }),
-        { runtimeGuard },
-      ))).catch(() => null);
-      if (runtimeGuard && !runtimeGuard()) return null;
-      if (hydratedSource) source = hydratedSource;
-    }
-    return { work, source };
-  }
-
-  function metricsFromOpenAlex(openAlex) {
-    if (!openAlex) return [];
-    const { work, source } = openAlex;
-    const metrics = [];
-    const journalSource = source?.type === 'journal' ? source : null;
-    const sourceUrl = cleanText(source?.id).replace('https://openalex.org/', 'https://openalex.org/sources/');
-    if (work?.is_retracted) {
-      metrics.push(makeMetric({
-        id: 'openalex:retracted', label: '论文状态', value: '已撤稿', source: 'OpenAlex / Retraction Watch',
-        note: '这是论文级状态，不是期刊评价。请点击 DOI 或出版方页面复核。', group: 'danger', tone: 'danger',
-      }));
-    }
-    if (journalSource?.is_in_doaj) {
-      metrics.push(makeMetric({
-        id: 'openalex:doaj', label: 'DOAJ', value: '期刊收录', source: 'OpenAlex（DOAJ 字段）',
-        note: '表示期刊列入开放获取期刊目录，不代表 JCR 分区或影响因子。',
-        url: 'https://doaj.org/', group: 'index', tone: 'info',
-      }));
-    }
-    if (journalSource?.is_core) {
-      metrics.push(makeMetric({
-        id: 'openalex:cwts-core', label: 'CWTS Core', value: '收录', source: 'OpenAlex',
-        note: 'OpenAlex 的 is_core 指 CWTS Core；它不是 Web of Science Core Collection。',
-        url: sourceUrl, group: 'index', tone: 'info',
-      }));
-    }
-    if (journalSource?.is_oa) {
-      metrics.push(makeMetric({
-        id: 'openalex:oa-journal', label: '开放获取', value: 'OA 期刊', source: 'OpenAlex',
-        note: '这是期刊开放获取属性，不代表论文质量或收录分区。', url: sourceUrl, group: 'open', tone: 'info',
-      }));
-    }
-    const indexedIn = new Set(Array.isArray(work?.indexed_in) ? work.indexed_in.map((item) => String(item).toLowerCase()) : []);
-    if (indexedIn.has('pubmed')) {
-      metrics.push(makeMetric({
-        id: 'openalex:pubmed-work', label: 'PubMed', value: '论文收录', source: 'OpenAlex indexed_in',
-        note: '仅表示这篇论文可在 PubMed 中检索，不等同于该期刊当前被 MEDLINE 收录。', group: 'index', tone: 'info',
-      }));
-    }
-    if (indexedIn.has('arxiv')) {
-      metrics.push(makeMetric({
-        id: 'openalex:arxiv-work', label: 'arXiv', value: '版本收录', source: 'OpenAlex indexed_in',
-        note: '这是论文级预印本索引信息。', group: 'open', tone: 'neutral',
-      }));
-    }
-    const citedness = Number(journalSource?.summary_stats?.['2yr_mean_citedness']);
-    if (Number.isFinite(citedness)) {
-      metrics.push(makeMetric({
-        id: 'openalex:2yr', label: '2 年平均被引', value: citedness.toFixed(2).replace(/\.00$/, ''), source: 'OpenAlex',
-        note: 'OpenAlex 2-year mean citedness；不是 Clarivate Journal Impact Factor（JIF）。',
-        url: sourceUrl, group: 'metric', tone: 'neutral',
-      }));
-    }
-    return metrics;
-  }
-
-  function eSearchUrl(issns, filter) {
-    const terms = parseIssnList(issns).map((issn) => `${issn}[issn]`).join(' OR ');
-    const url = new URL('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi');
-    url.searchParams.set('db', 'nlmcatalog');
-    url.searchParams.set('term', `(${terms}) AND ${filter}`);
-    url.searchParams.set('retmode', 'json');
-    url.searchParams.set('retmax', '1');
-    return url.toString();
-  }
-
-  async function lookupNlm(issns, openAlex, runtimeGuard) {
-    const normalized = parseIssnList(issns);
-    if (!state.config.enableNlm || !normalized.length) return [];
-    const key = normalized.sort().join('|');
-    const query = async (filter) => withCache(`nlm:${filter}:${key}`, 30 * 24 * 60 * 60 * 1000, () => nlmQueue.add(async () => {
-      const payload = await requestWithRetry(eSearchUrl(normalized, filter), { runtimeGuard });
-      return Number(payload?.esearchresult?.count || 0) > 0;
-    })).catch(() => false);
-    const medline = await query('currentlyindexed');
-    const pmc = await query('journalspmc');
-    return [
-      medline ? makeMetric({
-        id: 'nlm:medline', label: 'MEDLINE', value: '当前收录', source: 'NLM Catalog',
-        note: 'NLM Catalog currentlyindexed 检索结果；与“单篇论文在 PubMed”是不同概念。使用受 NCBI Disclaimer and Copyright Notice 约束：https://www.ncbi.nlm.nih.gov/About/disclaimer.html',
-        url: 'https://www.ncbi.nlm.nih.gov/nlmcatalog', group: 'index', tone: 'info',
-      }) : null,
-      pmc ? makeMetric({
-        id: 'nlm:pmc', label: 'PMC', value: '期刊列表', source: 'NLM Catalog',
-        note: '表示期刊在 PubMed Central 期刊列表中；不代表 SCI/JCR 收录。使用受 NCBI Disclaimer and Copyright Notice 约束：https://www.ncbi.nlm.nih.gov/About/disclaimer.html',
-        url: 'https://pmc.ncbi.nlm.nih.gov/journals/', group: 'index', tone: 'info',
-      }) : null,
-    ].filter(Boolean);
-  }
-
   async function lookupEasyScholar(journal, runtimeGuard) {
     const key = cleanText(state.config.easyScholarKey);
     const name = cleanText(journal);
@@ -1618,157 +1257,6 @@
       storeDebug({ fetchedAt: Date.now(), error: cleanText(error.message), cancelled: Boolean(error.cancelled), status: Number(error.status) || undefined });
       throw error;
     }
-  }
-
-  function freshNpiCache() {
-    const cached = gmGet(NPI_CACHE_KEY, null);
-    return cached?.expiresAt > Date.now() && Array.isArray(cached.records) ? cached : null;
-  }
-
-  function isValidNpiLease(lease, now = Date.now()) {
-    const expiresAt = Number(lease?.expiresAt || 0);
-    return Boolean(lease?.owner && expiresAt > now && expiresAt <= now + 90000);
-  }
-
-  async function acquireNpiDownloadLease() {
-    if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') {
-      return { owner: `local:${CONTEXT_ID}`, shared: false };
-    }
-    let storageFailures = 0;
-    for (;;) {
-      const cached = freshNpiCache();
-      if (cached) return { cached, shared: true };
-      const now = Date.now();
-      const current = gmGet(NPI_LEASE_KEY, null);
-      if (isValidNpiLease(current, now)) {
-        storageFailures = 0;
-      } else {
-        const owner = `${CONTEXT_ID}:${now.toString(36)}:${Math.random().toString(36).slice(2)}`;
-        gmSet(NPI_LEASE_KEY, { owner, expiresAt: now + 75000, savedAt: now });
-        await sleep(25 + Math.floor(Math.random() * 35));
-        const confirmed = gmGet(NPI_LEASE_KEY, null);
-        if (confirmed?.owner === owner) return { owner, shared: true };
-        if (isValidNpiLease(confirmed)) storageFailures = 0;
-        else storageFailures += 1;
-        if (storageFailures >= 5) {
-          // A present-but-broken storage API must not leave annotations waiting forever.
-          return { owner: `local:${CONTEXT_ID}:${Date.now().toString(36)}`, shared: false };
-        }
-      }
-      // Polling lets another tab return as soon as the cache is written or the lease is released.
-      await sleep(500 + Math.floor(Math.random() * 150));
-    }
-  }
-
-  function releaseNpiDownloadLease(lease) {
-    if (!lease?.shared || !lease.owner) return;
-    if (gmGet(NPI_LEASE_KEY, null)?.owner === lease.owner) gmDelete(NPI_LEASE_KEY);
-  }
-
-  function keepNpiDownloadLeaseAlive(lease) {
-    if (!lease?.shared || !lease.owner) return () => {};
-    let active = true;
-    const renew = () => {
-      if (!active) return;
-      const current = gmGet(NPI_LEASE_KEY, null);
-      if (current?.owner !== lease.owner) {
-        active = false;
-        return;
-      }
-      gmSet(NPI_LEASE_KEY, { owner: lease.owner, expiresAt: Date.now() + 75000, savedAt: Date.now() });
-      lease.timer = setTimeout(renew, 20000);
-    };
-    lease.timer = setTimeout(renew, 20000);
-    return () => {
-      active = false;
-      if (lease.timer) clearTimeout(lease.timer);
-    };
-  }
-
-  async function loadNpiIndex(runtimeGuard) {
-    if (!state.config.enableNpi) return null;
-    if (runtimeGuard && !runtimeGuard()) return null;
-    if (state.npiIndex) return state.npiIndex;
-    const buildIndex = (records) => {
-      const map = new Map();
-      records.forEach((record) => record.issns.forEach((issn) => map.set(issn, record)));
-      return map;
-    };
-    const persisted = freshNpiCache();
-    if (persisted) {
-      const cachedMap = buildIndex(persisted.records);
-      state.npiIndex = cachedMap;
-      return cachedMap;
-    }
-    if (!state.npiPromise) {
-      state.npiPromise = (async () => {
-        const lease = await acquireNpiDownloadLease();
-        if (!state.config.enableNpi || (runtimeGuard && !runtimeGuard())) {
-          releaseNpiDownloadLease(lease);
-          return null;
-        }
-        if (lease.cached) {
-          const refreshedMap = buildIndex(lease.cached.records);
-          state.npiIndex = refreshedMap;
-          return refreshedMap;
-        }
-        const stopLeaseHeartbeat = keepNpiDownloadLeaseAlive(lease);
-        try {
-          const refreshed = freshNpiCache();
-          if (refreshed) {
-            const refreshedMap = buildIndex(refreshed.records);
-            state.npiIndex = refreshedMap;
-            return refreshedMap;
-          }
-          const raw = await requestWithRetry(
-            'https://kanalregister.hkdir.no/publiseringskanaler/csvliste/tidsskrift?request_locale=en',
-            { responseType: 'text', accept: 'text/csv', timeout: 30000, skipDistributedThrottle: true, runtimeGuard },
-          );
-          if (!state.config.enableNpi || (runtimeGuard && !runtimeGuard())) return null;
-          const records = parseNpiCsv(raw);
-          const map = buildIndex(records);
-          state.npiIndex = map;
-          gmSet(NPI_CACHE_KEY, {
-            records,
-            savedAt: Date.now(),
-            expiresAt: Date.now() + (30 * 24 * 60 * 60 * 1000),
-          });
-          return map;
-        } finally {
-          stopLeaseHeartbeat();
-          releaseNpiDownloadLease(lease);
-        }
-      })().catch(() => null).finally(() => { state.npiPromise = null; });
-    }
-    return state.npiPromise;
-  }
-
-  async function lookupNpi(issns, runtimeGuard) {
-    if (!state.config.enableNpi) return [];
-    const index = await loadNpiIndex(runtimeGuard);
-    if (!index) return [];
-    let record = null;
-    let matchedIssn = '';
-    for (const issn of parseIssnList(issns)) {
-      if (index.has(issn)) {
-        record = index.get(issn);
-        matchedIssn = issn;
-        break;
-      }
-    }
-    if (!record) return [];
-    const rawLevel = record.level.replace(/^L/i, '');
-    const shownLevel = /^[012]$/.test(rawLevel) ? `L${rawLevel}` : rawLevel;
-    return [makeMetric({
-      id: 'npi:level',
-      label: 'NPI Norway',
-      value: shownLevel,
-      source: 'Norwegian Register for Scientific Journals, Series and Publishers',
-      year: record.year,
-      note: '挪威国家科研出版渠道等级：Level 2 为领先渠道、Level 1 为达到学术最低标准；不是 JCR 分区。',
-      url: 'https://kanalregister.hkdir.no/en',
-      group: 'level',
-    })];
   }
 
   function findDoiInElement(element) {
@@ -2267,7 +1755,7 @@
       .myscholar-badge--group-cas.myscholar-badge--tone-good { color:#9a3412 !important; background:#fff7ed !important; border-color:#fdba74 !important; }
       .myscholar-badge--group-cas.myscholar-badge--tone-info { color:#b45309 !important; background:#fffbeb !important; border-color:#fed7aa !important; }
       .myscholar-badge--group-cas.myscholar-badge--tone-neutral { color:#78350f !important; background:#fefce8 !important; border-color:#fde68a !important; }
-      /* level: 本校等级/CCF/ABDC/FMS/FT50/NPI 等分级类 — 紫罗兰 (Color Hunt #98E8DE #45A9A9 #3E3E75 #4E1F6E) */
+      /* level: 本校等级/CCF/ABDC/FMS/FT50 等分级类 — 紫罗兰 (Color Hunt #98E8DE #45A9A9 #3E3E75 #4E1F6E) */
       .myscholar-badge--group-level.myscholar-badge--tone-top { color:#581c87 !important; background:#faf5ff !important; border-color:#c084fc !important; }
       .myscholar-badge--group-level.myscholar-badge--tone-good { color:#6d28d9 !important; background:#f5f3ff !important; border-color:#c4b5fd !important; }
       .myscholar-badge--group-level.myscholar-badge--tone-info { color:#7e22ce !important; background:#fdf4ff !important; border-color:#e9d5ff !important; }
@@ -2748,24 +2236,11 @@
       setText(el('div', 'hint'), '为允许用户在任意出版社页面打开设置，本脚本声明 https://*/* 页面权限；未命中内置、自定义或已开启的结构化 DOI 规则时，不启动页面观察器，也不发送网络请求。'),
     );
 
-    const openAlexEnabled = checkboxBlock('启用 OpenAlex 开放指标', state.config.enableOpenAlex, 'openalex-enabled', '显示 DOAJ、CWTS Core、开放获取及 OpenAlex 2 年平均被引；后者不是 JIF。');
-    const openAlexKey = document.createElement('input');
-    openAlexKey.id = 'myscholar-openalex-key';
-    openAlexKey.type = 'password';
-    openAlexKey.autocomplete = 'off';
-    openAlexKey.value = state.config.openAlexApiKey;
-    const email = document.createElement('input');
-    email.id = 'myscholar-email';
-    email.type = 'email';
-    email.autocomplete = 'email';
-    email.value = state.config.crossrefEmail;
     const easyKey = document.createElement('input');
     easyKey.id = 'myscholar-easy-key';
     easyKey.type = 'password';
     easyKey.autocomplete = 'off';
     easyKey.value = state.config.easyScholarKey;
-    const nlm = checkboxBlock('医学期刊查询 NLM Catalog', state.config.enableNlm, 'nlm', '开启后会将已识别期刊的 ISSN 发送给 NLM Catalog，进一步区分 MEDLINE 当前收录与 PMC 期刊列表。使用该服务须遵守 NCBI Disclaimer and Copyright Notice。');
-    const npi = checkboxBlock('启用挪威 NPI 期刊等级', state.config.enableNpi, 'npi', '首次使用会下载官方当前期刊 CSV；L2/L1 是挪威国家分类，不是 JCR 分区。');
     const easyKeyField = fieldBlock('EasyScholar Open API Secret Key（可选）', easyKey, '仅保存在本油猴脚本的 GM 本地存储；查询时按官方 GET 接口要求，仅发送给 www.easyscholar.cc。留空并保存即可清除。');
     const easyDebugTools = el('div', 'label-tools');
     const dumpEasyBtn = el('button', 'action', '输出最近一次 EasyScholar 响应');
@@ -2845,14 +2320,9 @@
     });
     easyDebugTools.append(dumpEasyBtn);
     data.append(
-      openAlexEnabled.block,
-      fieldBlock('OpenAlex API Key（推荐，免费申请）', openAlexKey, '只发送给 api.openalex.org；不填写时脚本会尝试其有限匿名额度。'),
-      fieldBlock('联系邮箱（可选）', email, '仅发送给 Crossref 以使用礼貌请求池；不会发送给 NCBI，也不会展示在页面上。'),
       easyKeyField,
       easyDebugTools,
       dumpEasyStatus,
-      nlm.block,
-      npi.block,
     );
 
     const textarea = document.createElement('textarea');
@@ -2890,8 +2360,6 @@
     clear.addEventListener('click', () => {
       state.cache = {};
       gmDelete(CACHE_KEY);
-      state.npiIndex = null;
-      gmDelete(NPI_CACHE_KEY);
       status.textContent = '缓存已清空。';
     });
     save.addEventListener('click', () => {
@@ -2916,11 +2384,6 @@
           enableKnownSites: knownSites.input.checked,
           enableDoiAnywhere: doiAnywhere.input.checked,
           customSiteRules: normalizeSiteRules(customSites.value),
-          enableOpenAlex: openAlexEnabled.input.checked,
-          enableNlm: nlm.input.checked,
-          enableNpi: npi.input.checked,
-          openAlexApiKey: openAlexKey.value.trim(),
-          crossrefEmail: email.value.trim(),
           easyScholarKey: nextEasyKey,
           easyScholarProfileId: nextEasyProfileId,
           maxBadges: Math.min(12, Math.max(1, Number(maxBadges.value) || 6)),
@@ -2929,7 +2392,6 @@
         state.localRaw = nextLocalRaw;
         state.localIndex = indexLocalDataset(parsedLocal);
         rememberMetricOptions(parsedLocal.flatMap((record) => record.metrics));
-        state.npiIndex = null;
         if (previousEasyKey !== nextEasyKey) {
           abortOutstandingEasyScholarRequests();
           clearEasyScholarCache();
@@ -3046,10 +2508,6 @@
     };
   }
 
-  function isConfirmedJournalRecord(crossref, source) {
-    return crossref?.type === 'journal-article' || source?.type === 'journal';
-  }
-
   function descriptorRunIsCurrent(descriptor) {
     return Boolean(
       state.pageRuntimeActive
@@ -3071,119 +2529,64 @@
   }
 
   async function resolveDescriptor(descriptor, onPartial) {
-    if (descriptor.generic && !descriptor.doi) return null;
     if (!descriptorRunIsCurrent(descriptor)) return null;
     if (!publicationStillMatchesDescriptor(descriptor)) return null;
-    const hasDoi = normalizeDoi(descriptor.doi);
-    let crossref = null;
-    let crossrefFailed = false;
-    let openAlex = null;
-    if (hasDoi) {
-      // 有 DOI 时 Crossref 和 OpenAlex 可完全并行（两者均按 DOI 独立查询）
-      const [crossrefResult, openAlexResult] = await Promise.all([
-        (async () => {
-          try { return await lookupCrossref(descriptor); }
-          catch (error) {
-            if (!descriptor.journalHint) throw error;
-            crossrefFailed = true;
-            return null;
-          }
-        })(),
-        settleWithin(lookupOpenAlex(hasDoi, descriptor.runtimeGuard), 12000, null),
-      ]);
-      crossref = crossrefResult;
-      openAlex = openAlexResult;
-    } else {
-      // 无 DOI：先 Crossref 题名检索，拿到 DOI 后再查 OpenAlex
-      try {
-        crossref = await lookupCrossref(descriptor);
-      } catch (error) {
-        if (!descriptor.journalHint) throw error;
-        crossrefFailed = true;
-      }
-    }
-    if (!descriptorRunIsCurrent(descriptor)) return null;
-    if (!publicationStillMatchesDescriptor(descriptor)) return null;
-    // A generic page has no publisher-specific selector contract. Require the
-    // exact DOI lookup (including its title check) to succeed before any
-    // journal-level source is queried. This prevents a stale/foreign DOI from
-    // turning an otherwise plausible page meta journal name into a false tag.
-    if (descriptor.generic && !crossref) return null;
-    if (!crossref && !descriptor.journalHint) return null;
-    if (!hasDoi && crossref?.doi) {
-      openAlex = await settleWithin(
-        lookupOpenAlex(crossref.doi, descriptor.runtimeGuard),
-        12000,
-        null,
-      );
-    }
-    if (!descriptorRunIsCurrent(descriptor)) return null;
-    if (!publicationStillMatchesDescriptor(descriptor)) return null;
-    const source = openAlex?.source;
-    const journalSource = source?.type === 'journal' ? source : null;
-    const crossrefIsJournal = crossref?.type === 'journal-article';
-    const pageMayBeJournal = !crossref && Boolean(descriptor.journalHint);
-    if (crossref && !isConfirmedJournalRecord(crossref, journalSource)) return null;
-    const journal = cleanText(journalSource?.display_name || (crossrefIsJournal ? crossref?.journal : '') || (pageMayBeJournal ? descriptor.journalHint : ''));
+    
+    const journal = cleanText(descriptor.journalHint);
     if (!journal) return null;
-    const issns = [...new Set([...(crossref?.issns || []), ...extractIssns(journalSource)])];
-    const local = localMetrics(journal, issns);
-    if (!descriptorRunIsCurrent(descriptor)) return null;
-    const journalMetric = makeMetric({
-      id: 'journal:name', label: (crossrefIsJournal || journalSource) ? '期刊' : '出版来源', value: journal || '已识别（名称缺失）', source: crossref ? 'Crossref / OpenAlex' : `${descriptor.site} 页面字段`,
-      year: crossref?.year || descriptor.year, note: crossref
-        ? `论文与期刊通过${crossref.match.method}匹配；点开详情可查看匹配题名与置信度。`
-        : '期刊名直接取自当前结果卡的来源字段；未通过 DOI/题名元数据服务复核。',
-      url: crossref?.doi ? `https://doi.org/${crossref.doi}` : '', group: 'journal', tone: 'neutral',
-    });
-    const match = crossref?.match || {
+    
+    const issns = [];
+    const doi = normalizeDoi(descriptor.doi) || '';
+    const match = {
       method: '页面期刊字段', confidence: null, queryTitle: descriptor.title, matchedTitle: descriptor.title,
+      yearDistance: 0,
     };
-    // 增量渲染：先用本地数据 + OpenAlex 快速出标签，慢源（EasyScholar/NLM/NPI）稍后补充
-    if (onPartial) {
-      const partialMetrics = metricDedupe([
-        ...local.metrics,
-        ...metricsFromOpenAlex(openAlex),
-        journalMetric,
-      ]);
-      if (partialMetrics.length) {
-        rememberMetricOptions(partialMetrics);
-        onPartial({
-          paperTitle: descriptor.title,
-          site: descriptor.site,
-          journal,
-          issns,
-          doi: crossref?.doi || descriptor.doi,
-          match,
-          metrics: partialMetrics,
-          notices: [],
-        });
+    
+    // 累积式增量渲染：本地数据立即显示，EasyScholar 有结果就补充
+    const accumulatedMetrics = [];
+    const emitPartial = (newMetrics) => {
+      if (!onPartial) return;
+      for (const metric of newMetrics) {
+        if (!accumulatedMetrics.some((m) => m.id === metric.id)) {
+          accumulatedMetrics.push(metric);
+        }
       }
-    }
-    const [easyMetrics, nlmMetrics, npiMetrics] = await Promise.all([
-      settleWithin(lookupEasyScholar(journal, descriptor.runtimeGuard), 8000, []),
-      settleWithin(lookupNlm(issns, openAlex, descriptor.runtimeGuard), 7000, []),
-      settleWithin(lookupNpi(issns, descriptor.runtimeGuard), 5000, []),
-    ]);
+      const deduped = metricDedupe(accumulatedMetrics);
+      rememberMetricOptions(deduped);
+      
+      const journalMetric = makeMetric({
+        id: 'journal:name', label: '期刊', value: journal, source: `${descriptor.site} 页面字段`,
+        year: descriptor.year, note: '期刊名取自当前页面元数据；标签结果由本地目录和 EasyScholar 查询提供。',
+        url: doi ? `https://doi.org/${doi}` : '', group: 'journal', tone: 'neutral',
+      });
+      
+      const allMetrics = metricDedupe([...deduped, journalMetric]);
+      
+      onPartial({
+        paperTitle: descriptor.title,
+        site: descriptor.site,
+        journal,
+        issns,
+        doi,
+        match,
+        metrics: allMetrics,
+        notices: [],
+      });
+    };
+    
+    // 立即渲染本地数据（即使没有本地数据也要渲染期刊名称标签）
+    const local = localMetrics(journal, issns);
+    emitPartial(local.metrics);
+    
+    // EasyScholar 查询
+    const easyMetrics = await settleWithin(lookupEasyScholar(journal, descriptor.runtimeGuard), 4000, []);
     if (!descriptorRunIsCurrent(descriptor)) return null;
-    const metrics = metricDedupe([
-      ...local.metrics,
-      ...easyMetrics,
-      ...metricsFromOpenAlex(openAlex),
-      ...nlmMetrics,
-      ...npiMetrics,
-      journalMetric,
-    ]);
-    rememberMetricOptions(metrics);
+    
+    if (easyMetrics.length) {
+      emitPartial(easyMetrics);
+    }
+    
     const notices = [];
-    if (match.method === '题名' && match.confidence < 0.9) {
-      notices.push(`题名匹配置信度为 ${(match.confidence * 100).toFixed(0)}%，请核对 DOI 与期刊名后再用于评价。`);
-    }
-    if (match.yearDistance === 1) {
-      notices.push('页面年份与元数据相差 1 年，可能是 online-first 与印刷出版年份不同；详情中的 DOI 和期刊名需要复核。');
-    }
-    if (!crossref) notices.push('未在 Crossref 可靠匹配该论文；等级仅依据页面给出的期刊名查询。');
-    if (crossrefFailed) notices.push('Crossref 本次请求失败；页面期刊字段仍可用于本地或用户授权数据源。');
     if (local.notice) notices.push(local.notice);
     if (easyMetrics.some((metric) => metric.group === 'cas')) {
       notices.push('中科院分区已自 2026 年起停止官方更新；这里的相关标签只能是历史口径。');
@@ -3193,9 +2596,9 @@
       site: descriptor.site,
       journal,
       issns,
-      doi: crossref?.doi || descriptor.doi,
+      doi,
       match,
-      metrics,
+      metrics: metricDedupe(accumulatedMetrics),
       notices,
     };
   }
@@ -3223,10 +2626,14 @@
       const onPartial = (partialDetail) => {
         if (!container.isConnected) return;
         if (partialDetail && partialDetail.metrics.length) {
-          renderDetail(container, partialDetail);
-          partialRendered = true;
-          const processed = state.processed.get(descriptor.target);
-          if (processed?.container === container) processed.done = 'success';
+          const visibleCount = filterVisibleMetrics(partialDetail.metrics, state.config.hiddenMetricKeys).length;
+          if (!visibleCount) return;
+          const rendered = renderDetail(container, partialDetail);
+          if (rendered) {
+            partialRendered = true;
+            const processed = state.processed.get(descriptor.target);
+            if (processed?.container === container) processed.done = 'success';
+          }
         }
       };
       const detailPromise = annotationQueue.add(() => resolveDescriptor(descriptor, onPartial));
@@ -3316,7 +2723,7 @@
         if (!container.isConnected) return;
         state.visibleObserver?.unobserve(container);
         start();
-      }, 10000);
+      }, 1000);
     } else start();
   }
 
@@ -3495,8 +2902,6 @@
     GM_registerMenuCommand('MyScholar：清空缓存', () => {
       state.cache = {};
       gmDelete(CACHE_KEY);
-      state.npiIndex = null;
-      gmDelete(NPI_CACHE_KEY);
       resetAndScan();
     });
   }
