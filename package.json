@@ -1,6 +1,6 @@
 {
   "name": "myscholar-userscript",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "private": true,
   "description": "在论文标题旁显示可核验的期刊、分级和收录标签。",
   "scripts": {
