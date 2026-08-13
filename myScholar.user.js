@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MyScholar 期刊标签
 // @namespace    https://github.com/waynehfut/myscholar
-// @version      0.3.3
+// @version      0.3.4
 // @description  在学术网页的论文标题旁显示可自定义的期刊、开放指标、收录情况及用户授权的期刊分级数据。
 // @author       MyScholar contributors
 // @license      MIT
@@ -21,7 +21,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.3.3';
+  const VERSION = '0.3.4';
   const CONFIG_KEY = 'myscholar:config:v1';
   const CACHE_KEY = 'myscholar:cache:v1';
   const LOCAL_DATA_KEY = 'myscholar:local-data:v1';
