@@ -715,6 +715,7 @@
 
   const CORE_EXPORTS = {
     cleanText,
+    hashString,
     normalizeTitle,
     normalizeJournal,
     normalizeIssn,
@@ -751,6 +752,7 @@
     isGoogleScholarHost,
     gsVenueHint,
     gsProfileVenueHint,
+    peekCachedEasyMetrics,
   };
 
   if (typeof document === 'undefined' && typeof module !== 'undefined' && module.exports) {
@@ -985,6 +987,16 @@
     }, 500);
   }
 
+  // 页面隐藏/关闭时立即落盘待写的缓存：否则查询完成后 500ms 内刷新或关闭页面，
+  // 缓存会因防抖定时器未触发而丢失，下次访问同一期刊又要重新请求 EasyScholar。
+  function flushPendingCacheSave() {
+    if (!state.cacheSaveTimer) return;
+    clearTimeout(state.cacheSaveTimer);
+    state.cacheSaveTimer = null;
+    pruneCache();
+    gmSet(CACHE_KEY, state.cache);
+  }
+
   async function withCache(key, positiveTtlMs, loader, negativeTtlMs = 24 * 60 * 60 * 1000) {
     const cached = state.cache[key];
     if (cached && Number(cached.expiresAt) > Date.now()) return cached.value;
@@ -998,6 +1010,22 @@
     })().finally(() => state.workInFlight.delete(key));
     state.workInFlight.set(key, promise);
     return promise;
+  }
+
+  // 同步窥探 EasyScholar 结果缓存：命中返回指标数组，未命中返回 null。
+  // 缺少 key/profileId/期刊名时与 lookupEasyScholar 的行为一致，返回空数组（同样无需请求）。
+  // 供缓存命中的快速路径使用：命中时可完全同步地完成解析与渲染，不必排队等待网络。
+  function peekCachedEasyMetrics(cache, easyKey, profileId, journal, now = Date.now()) {
+    const name = cleanText(journal);
+    const key = cleanText(easyKey);
+    const profile = cleanText(profileId);
+    if (!key || !name || !profile) return [];
+    const cacheKey = `easy:${profile}:${hashString(normalizeJournal(name))}`;
+    const cached = cache?.[cacheKey];
+    if (cached && Number(cached.expiresAt) > now) {
+      return Array.isArray(cached.value) ? cached.value : [];
+    }
+    return null;
   }
 
   class RateQueue {
@@ -1199,6 +1227,10 @@
       }
     }
     throw lastError;
+  }
+
+  function peekEasyScholarCache(journal) {
+    return peekCachedEasyMetrics(state.cache, state.config.easyScholarKey, state.config.easyScholarProfileId, journal);
   }
 
   async function lookupEasyScholar(journal, runtimeGuard) {
@@ -2657,6 +2689,29 @@
     
     // 立即渲染本地数据（即使没有本地数据也要渲染期刊名称标签）
     const local = localMetrics(journal, issns);
+
+    // 缓存命中快速路径：EasyScholar 结果已在本地缓存时，全程同步完成，
+    // 一次性合并渲染本地数据与缓存结果，避免异步等待与二次渲染。
+    const cachedEasy = peekEasyScholarCache(journal);
+    if (cachedEasy) {
+      emitPartial([...local.metrics, ...cachedEasy]);
+      const notices = [];
+      if (local.notice) notices.push(local.notice);
+      if (cachedEasy.some((metric) => metric.group === 'cas')) {
+        notices.push('中科院分区已自 2026 年起停止官方更新；这里的相关标签只能是历史口径。');
+      }
+      return {
+        paperTitle: descriptor.title,
+        site: descriptor.site,
+        journal,
+        issns,
+        doi,
+        match,
+        metrics: metricDedupe(accumulatedMetrics),
+        notices,
+      };
+    }
+
     emitPartial(local.metrics);
     
     // EasyScholar 查询
@@ -2717,7 +2772,11 @@
           }
         }
       };
-      const detailPromise = annotationQueue.add(() => resolveDescriptor(descriptor, onPartial));
+      // 缓存命中时解析全程同步（无网络请求），跳过标注队列的限流间隔立即渲染；
+      // 未命中才进队列排队，避免并发请求冲击 EasyScholar。
+      const detailPromise = peekEasyScholarCache(descriptor.journalHint)
+        ? Promise.resolve(resolveDescriptor(descriptor, onPartial))
+        : annotationQueue.add(() => resolveDescriptor(descriptor, onPartial));
       const detail = await rejectAfter(detailPromise, 45000);
       if (!container.isConnected) return;
       // 目标被页面替换（断连）时放弃本次渲染；仅暂时不可见则保留，恢复可见后徽章仍在
@@ -2801,11 +2860,14 @@
     if (state.visibleObserver) {
       container.__myscholarStart = start;
       state.visibleObserver.observe(container);
+      // 兜底定时器只是 IntersectionObserver 失效时的安全网，不应替代按视口懒标注：
+      // 长列表页（如 Google Scholar 作者页上百行）若 1 秒就全部启动，会在加载瞬间
+      // 插入上百个“查询中”徽章并排满 EasyScholar 队列；拉长兜底让屏幕外的行等滚动接近再查询。
       container.__myscholarFallbackTimer = setTimeout(() => {
         if (!container.isConnected) return;
         state.visibleObserver?.unobserve(container);
         start();
-      }, 1000);
+      }, 8000);
     } else start();
   }
 
@@ -2858,11 +2920,20 @@
     if (!target?.tagName) return null;
     const expected = record.container?.dataset?.myscholarFor
       || hashString(normalizeTitle(target.textContent));
-    const candidates = document.querySelectorAll(target.tagName);
-    for (const strictClass of [true, false]) {
+    // 优先用“标签名 + 原类名”收窄选择器，避免 SPA 重渲染时对全页同标签元素
+    // （如作者页的全部链接）逐个做昂贵的标题归一化与哈希。
+    const safeClasses = [...(target.classList || [])].filter((name) => /^[A-Za-z0-9_-]+$/.test(name));
+    const narrowedSelector = safeClasses.length
+      ? `${target.tagName.toLocaleLowerCase('en-US')}.${safeClasses.join('.')}`
+      : '';
+    const candidateSets = [];
+    if (narrowedSelector) {
+      try { candidateSets.push(document.querySelectorAll(narrowedSelector)); } catch (_) { /* 选择器类名已白名单校验，此分支仅作防御 */ }
+    }
+    candidateSets.push(document.querySelectorAll(target.tagName));
+    for (const candidates of candidateSets) {
       for (const node of candidates) {
         if (!node.isConnected || node === target) continue;
-        if (strictClass && String(node.className) !== String(target.className)) continue;
         if (!isDescriptorTargetVisible(node)) continue;
         if (node.closest('.myscholar-badges, #myscholar-ui-host')) continue;
         if (hashString(normalizeTitle(node.textContent)) === expected) return node;
@@ -3071,6 +3142,7 @@
     loadState();
     registerMenus();
     registerStorageListeners();
+    window.addEventListener('pagehide', flushPendingCacheSave);
     reconcilePageActivation();
     setInterval(() => {
       if (location.href !== state.lastUrl) {
